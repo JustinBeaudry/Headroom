@@ -257,9 +257,11 @@ struct HeadroomCLI {
 
         case "import-claude":
             let account = optionValue(in: args, flag: "--account") ?? "personal"
+            let cliDir = optionValue(in: args, flag: "--cli-dir")
             let discovery = CredentialDiscovery(secretStore: store)
-            guard let token = discovery.importClaudeCodeKeychainToken() else {
-                fputs("Could not read 'Claude Code-credentials' from macOS Keychain.\n", stderr)
+            guard let token = discovery.importClaudeCodeKeychainToken(cliConfigDir: cliDir) else {
+                let svc = CredentialDiscovery.claudeKeychainServiceName(for: cliDir)
+                fputs("Could not read '\(svc)' from macOS Keychain.\n", stderr)
                 exit(1)
             }
             do {
@@ -267,6 +269,23 @@ struct HeadroomCLI {
                 print("Imported Claude Code OAuth token into Headroom Keychain for claude (\(account)).")
             } catch {
                 fputs("Failed to save token: \(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+
+        case "import-codex":
+            let account = optionValue(in: args, flag: "--account") ?? "personal"
+            let cliDir = optionValue(in: args, flag: "--cli-dir")
+            let discovery = CredentialDiscovery(secretStore: store)
+            guard let cred = discovery.importCodexCLICredential(cliConfigDir: cliDir) else {
+                let acct = CredentialDiscovery.codexKeychainAccountName(for: cliDir)
+                fputs("Could not read Codex token from auth.json or Keychain ('Codex Auth' / '\(acct)').\n", stderr)
+                exit(1)
+            }
+            do {
+                try store.setSecret(cred.value, provider: .codex, accountLabel: account, kind: cred.kind)
+                print("Imported Codex CLI credential into Headroom Keychain for codex (\(account)).")
+            } catch {
+                fputs("Failed to save credential: \(error.localizedDescription)\n", stderr)
                 exit(1)
             }
 

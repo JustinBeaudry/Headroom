@@ -413,17 +413,36 @@ public final class HeadroomViewModel {
         return (true, "Saved in Keychain for \(provider.displayName) (\(finalLabel)).")
     }
 
-    /// Explicitly imports Claude Code's OAuth token from macOS Login Keychain ("Claude Code-credentials")
-    /// into Headroom's own Keychain, then immediately tests live usage against Anthropic's OAuth endpoint.
-    public func importClaudeCodeFromKeychain(accountLabel: String) async -> (ok: Bool, message: String) {
-        guard let token = discovery.importClaudeCodeKeychainToken(), !token.isEmpty else {
-            return (false, "Could not read 'Claude Code-credentials' from macOS Keychain. Make sure Claude Code CLI is signed in (`claude`) and click Allow if macOS prompts.")
+    /// Explicitly imports Claude Code's OAuth token from macOS Login Keychain (profile-aware:
+    /// `"Claude Code-credentials"` for ~/.claude, or `"Claude Code-credentials-<sha256_8>"` for custom folders
+    /// like `~/.claude-work`), saves into Headroom's Keychain, and tests live usage.
+    public func importClaudeCodeFromKeychain(accountLabel: String, cliConfigDir: String? = nil) async -> (ok: Bool, message: String) {
+        let dir = cliConfigDir ?? config.accounts.first(where: { $0.provider == .claude && $0.label == accountLabel })?.cliConfigDir
+        let serviceName = CredentialDiscovery.claudeKeychainServiceName(for: dir)
+        guard let token = discovery.importClaudeCodeKeychainToken(cliConfigDir: dir), !token.isEmpty else {
+            return (false, "Could not read '\(serviceName)' from macOS Keychain. Sign in with `CLAUDE_CONFIG_DIR=\(dir ?? "~/.claude") claude` and click Allow if macOS prompts.")
         }
         return await saveAndTestCredential(
             value: token,
             provider: .claude,
             accountLabel: accountLabel,
             kind: .oauthToken
+        )
+    }
+
+    /// Explicitly imports Codex CLI credentials for `~/.codex` or a custom `CODEX_HOME` folder (e.g. `~/.codex-work`),
+    /// supporting both `auth.json` and macOS Keychain (`Codex Auth` / `cli|<sha256_16>`), and tests live usage.
+    public func importCodexFromCLI(accountLabel: String, cliConfigDir: String? = nil) async -> (ok: Bool, message: String) {
+        let dir = cliConfigDir ?? config.accounts.first(where: { $0.provider == .codex && $0.label == accountLabel })?.cliConfigDir
+        let acctKey = CredentialDiscovery.codexKeychainAccountName(for: dir)
+        guard let cred = discovery.importCodexCLICredential(cliConfigDir: dir) else {
+            return (false, "No Codex token found in \(dir ?? "~/.codex")/auth.json or Keychain ('Codex Auth' / '\(acctKey)'). Run `CODEX_HOME=\(dir ?? "~/.codex") codex login` and click Allow if macOS prompts.")
+        }
+        return await saveAndTestCredential(
+            value: cred.value,
+            provider: .codex,
+            accountLabel: accountLabel,
+            kind: cred.kind
         )
     }
 

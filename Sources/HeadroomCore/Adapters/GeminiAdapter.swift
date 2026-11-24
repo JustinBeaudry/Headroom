@@ -20,7 +20,7 @@ public struct GeminiAdapter: ProviderAdapter {
 
         switch lane {
         case .gcpQuota:
-            return await fetchGCPQuotaLane(account: account, creds: creds, localCost: localCost, now: now, httpClient: context.httpClient)
+            return await fetchLiveCodeAssistQuota(account: account, creds: creds, localCost: localCost, now: now, httpClient: context.httpClient)
 
         case .apiKey:
             return buildAPIKeyLane(account: account, creds: creds, localDaily: localDaily, now: now)
@@ -29,13 +29,21 @@ public struct GeminiAdapter: ProviderAdapter {
             return buildCLILane(account: account, creds: creds, localDaily: localDaily, now: now)
 
         case .auto:
-            // Prefer GCP Code Assist Quota if project + OAuth token exist, then CLI logs/OAuth, then API Key lane.
-            if let project = account.gcpProjectId, !project.isEmpty,
-               creds.contains(where: { $0.kind == .oauthToken }) {
-                let gcp = await fetchGCPQuotaLane(account: account, creds: creds, localCost: localCost, now: now, httpClient: context.httpClient)
-                if gcp.status == .ok { return gcp }
+            // 1. Try live Google Code Assist / Gemini CLI OAuth quota endpoint first when OAuth is present
+            if creds.contains(where: { $0.kind == .oauthToken }) {
+                let live = await fetchLiveCodeAssistQuota(account: account, creds: creds, localCost: localCost, now: now, httpClient: context.httpClient)
+                if live.status == .ok {
+                    return live
+                }
+                // Only fall back to local CLI log count when there are actual requests logged today
+                if localDaily.requestCount > 0 {
+                    return buildCLILane(account: account, creds: creds, localDaily: localDaily, now: now)
+                }
+                // Otherwise return the honest live status (e.g. authExpired or subscription notice)
+                // instead of fabricating a misleading "100% left (0 / 1000 req)" bar.
+                return live
             }
-            if localDaily.requestCount > 0 || creds.contains(where: { $0.kind == .oauthToken }) {
+            if localDaily.requestCount > 0 {
                 return buildCLILane(account: account, creds: creds, localDaily: localDaily, now: now)
             }
             if creds.contains(where: { $0.kind == .apiKey }) {
@@ -49,12 +57,12 @@ public struct GeminiAdapter: ProviderAdapter {
                 fetchedAt: now,
                 source: nil,
                 billingModel: nil,
-                message: "No Gemini CLI OAuth (~/.gemini/oauth_creds.json), GCP project, or GEMINI_API_KEY detected. Configure lane via `headroom config set-gemini-lane`."
+                message: "No Gemini CLI OAuth (~/.gemini/oauth_creds.json), GCP project, or GEMINI_API_KEY detected."
             )
         }
     }
 
-    private func fetchGCPQuotaLane(
+    private func fetchLiveCodeAssistQuota(
         account: AccountConfig,
         creds: [DiscoveredCredential],
         localCost: Double?,
@@ -70,72 +78,244 @@ public struct GeminiAdapter: ProviderAdapter {
                 fetchedAt: now,
                 source: "lane:gcp_quota",
                 billingModel: .subscription,
-                message: "Gemini GCP quota lane requires OAuth token (Gemini CLI or gcloud ADC)."
+                message: "Gemini quota lane requires OAuth token (sign in via `gemini` CLI or gcloud)."
             )
         }
 
-        let project = account.gcpProjectId ?? "default"
-        guard let url = URL(string: "https://cloudaicompanion.googleapis.com/v1/projects/\(project)/locations/global:retrieveUserQuota") else {
-            return ProviderSnapshot(provider: .gemini, accountLabel: account.label, status: .incident, windows: [], fetchedAt: now, message: "Invalid GCP quota URL")
+        // Refresh expired Google OAuth access token automatically when local gemini-cli OAuth config is available
+        var bearerToken = oauth.value
+        if isTokenExpired(oauth, now: now), let refreshToken = oauth.metadata["refresh_token"] {
+            if let refreshed = await refreshGeminiOAuthToken(refreshToken: refreshToken, httpClient: httpClient) {
+                bearerToken = refreshed
+            }
         }
 
         let headers = [
-            "Authorization": "Bearer \(oauth.value)",
+            "Authorization": "Bearer \(bearerToken)",
             "Accept": "application/json",
             "Content-Type": "application/json"
         ]
 
+        // 1. If user explicitly set a GCP project ID, try cloudaicompanion.googleapis.com first
+        if let project = account.gcpProjectId, !project.isEmpty,
+           let gcpURL = URL(string: "https://cloudaicompanion.googleapis.com/v1/projects/\(project)/locations/global:retrieveUserQuota") {
+            if let snap = await queryQuotaEndpoint(
+                url: gcpURL,
+                body: Data("{}".utf8),
+                headers: headers,
+                accountLabel: account.label,
+                source: "gcp_quota:\(oauth.source)",
+                localCost: localCost,
+                now: now,
+                httpClient: httpClient
+            ) {
+                return snap
+            }
+        }
+
+        // 2. Discover project via cloudcode-pa.googleapis.com/v1internal:loadCodeAssist (Gemini CLI / Code Assist standard flow)
+        var discoveredProject: String? = account.gcpProjectId
+        if discoveredProject == nil,
+           let loadURL = URL(string: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") {
+            let loadBody = Data(#"{"metadata":{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}"#.utf8)
+            if let loadResp = try? await httpClient.send(HTTPRequest(url: loadURL, method: "POST", headers: headers, body: loadBody)) {
+                if loadResp.isAuthFailure {
+                    return ProviderSnapshot(
+                        provider: .gemini,
+                        accountLabel: account.label,
+                        status: .authExpired,
+                        windows: [],
+                        fetchedAt: now,
+                        source: oauth.source,
+                        billingModel: .subscription,
+                        message: "Gemini CLI OAuth token expired (HTTP \(loadResp.statusCode)). Run `gemini` once to refresh login."
+                    )
+                }
+                if loadResp.isSuccess, let json = loadResp.jsonObject() as? [String: Any] {
+                    if let proj = json["cloudaicompanionProject"] as? String, !proj.isEmpty {
+                        discoveredProject = proj
+                    }
+                }
+            }
+        }
+
+        guard let quotaURL = URL(string: "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota") else {
+            return ProviderSnapshot(provider: .gemini, accountLabel: account.label, status: .incident, windows: [], fetchedAt: now, message: "Invalid Gemini quota URL.")
+        }
+
+        let quotaBody: Data
+        if let proj = discoveredProject, !proj.isEmpty {
+            quotaBody = (try? JSONSerialization.data(withJSONObject: ["project": proj])) ?? Data("{}".utf8)
+        } else {
+            quotaBody = Data("{}".utf8)
+        }
+
+        if let snap = await queryQuotaEndpoint(
+            url: quotaURL,
+            body: quotaBody,
+            headers: headers,
+            accountLabel: account.label,
+            source: "code_assist:\(oauth.source)",
+            localCost: localCost,
+            now: now,
+            httpClient: httpClient
+        ) {
+            return snap
+        }
+
+        return ProviderSnapshot(
+            provider: .gemini,
+            accountLabel: account.label,
+            status: .incident,
+            windows: [],
+            fetchedAt: now,
+            source: oauth.source,
+            billingModel: .subscription,
+            message: "Could not retrieve live Gemini quota."
+        )
+    }
+
+    private func queryQuotaEndpoint(
+        url: URL,
+        body: Data,
+        headers: [String: String],
+        accountLabel: String,
+        source: String,
+        localCost: Double?,
+        now: Date,
+        httpClient: any HTTPClient
+    ) async -> ProviderSnapshot? {
         do {
-            let resp = try await httpClient.send(HTTPRequest(url: url, method: "POST", headers: headers, body: Data("{}".utf8)))
-            if resp.isAuthFailure {
+            let resp = try await httpClient.send(HTTPRequest(url: url, method: "POST", headers: headers, body: body))
+            if resp.statusCode == 401 {
                 return ProviderSnapshot(
                     provider: .gemini,
-                    accountLabel: account.label,
+                    accountLabel: accountLabel,
                     status: .authExpired,
                     windows: [],
                     fetchedAt: now,
-                    source: oauth.source,
+                    source: source,
                     billingModel: .subscription,
-                    message: "Google Cloud OAuth expired (HTTP \(resp.statusCode)). Re-authenticate Gemini CLI or gcloud."
+                    message: "Gemini OAuth token expired (HTTP 401). Run `gemini` CLI to re-authenticate."
+                )
+            }
+            if resp.statusCode == 403 {
+                let rawText = String(data: resp.body, encoding: .utf8) ?? ""
+                let msg = rawText.contains("SUBSCRIPTION_REQUIRED")
+                    ? "Google account in ~/.gemini/oauth_creds.json has no active Gemini Code Assist license. Switch lane to CLI Logs or API Key in Settings, or sign into Gemini CLI with a licensed account."
+                    : "Gemini quota API denied access (HTTP 403). Verify Gemini Code Assist subscription or switch lane in Settings."
+                return ProviderSnapshot(
+                    provider: .gemini,
+                    accountLabel: accountLabel,
+                    status: .stale,
+                    windows: [],
+                    fetchedAt: now,
+                    source: source,
+                    billingModel: .subscription,
+                    message: msg,
+                    estimatedLocalCostUSD: localCost
                 )
             }
             guard resp.isSuccess, let json = resp.jsonObject() as? [String: Any] else {
-                return ProviderSnapshot(
-                    provider: .gemini,
-                    accountLabel: account.label,
-                    status: .incident,
-                    windows: [],
-                    fetchedAt: now,
-                    source: oauth.source,
-                    billingModel: .subscription,
-                    message: "cloudaicompanion quota API returned HTTP \(resp.statusCode)."
-                )
+                return nil
             }
-
             let windows = Self.parseGCPQuotaPayload(json, now: now)
             return ProviderSnapshot(
                 provider: .gemini,
-                accountLabel: account.label,
+                accountLabel: accountLabel,
                 status: .ok,
                 windows: windows,
                 fetchedAt: now,
-                source: "gcp_quota:\(oauth.source)",
+                source: source,
                 billingModel: .subscription,
-                message: nil,
+                message: windows.isEmpty ? "Connected to Gemini Code Assist (no active quota buckets returned)." : nil,
                 estimatedLocalCostUSD: localCost
             )
         } catch {
             return ProviderSnapshot(
                 provider: .gemini,
-                accountLabel: account.label,
+                accountLabel: accountLabel,
                 status: .incident,
                 windows: [],
                 fetchedAt: now,
-                source: oauth.source,
+                source: source,
                 billingModel: .subscription,
-                message: "GCP quota request failed: \(error.localizedDescription)"
+                message: "Gemini quota request failed: \(error.localizedDescription)"
             )
         }
+    }
+
+    private func isTokenExpired(_ cred: DiscoveredCredential, now: Date) -> Bool {
+        guard let expStr = cred.metadata["expiry_ms"], let expMs = Double(expStr) else {
+            return false
+        }
+        return Date(timeIntervalSince1970: expMs / 1000.0) <= now.addingTimeInterval(60)
+    }
+
+    private func refreshGeminiOAuthToken(refreshToken: String, httpClient: any HTTPClient) async -> String? {
+        guard let (clientId, clientSecret) = Self.discoverLocalGeminiCLIOAuthClient(),
+              let tokenURL = URL(string: "https://oauth2.googleapis.com/token") else {
+            return nil
+        }
+        var comps = URLComponents()
+        comps.queryItems = [
+            URLQueryItem(name: "client_id", value: clientId),
+            URLQueryItem(name: "client_secret", value: clientSecret),
+            URLQueryItem(name: "refresh_token", value: refreshToken),
+            URLQueryItem(name: "grant_type", value: "refresh_token")
+        ]
+        guard let bodyStr = comps.percentEncodedQuery else { return nil }
+        let req = HTTPRequest(
+            url: tokenURL,
+            method: "POST",
+            headers: ["Content-Type": "application/x-www-form-urlencoded"],
+            body: Data(bodyStr.utf8),
+            timeoutInterval: 10
+        )
+        guard let resp = try? await httpClient.send(req),
+              resp.isSuccess,
+              let json = resp.jsonObject() as? [String: Any],
+              let newToken = json["access_token"] as? String, !newToken.isEmpty else {
+            return nil
+        }
+        return newToken
+    }
+
+    /// Reads the public installed-app OAuth client config from a local `@google/gemini-cli` installation at runtime.
+    private static func discoverLocalGeminiCLIOAuthClient() -> (String, String)? {
+        let candidateBins = [
+            "/opt/homebrew/bin/gemini",
+            "/usr/local/bin/gemini"
+        ]
+        let fm = FileManager.default
+        for bin in candidateBins where fm.fileExists(atPath: bin) {
+            let resolved = URL(fileURLWithPath: bin).resolvingSymlinksInPath()
+            let bundleDir = resolved.deletingLastPathComponent()
+            guard let files = try? fm.contentsOfDirectory(at: bundleDir, includingPropertiesForKeys: nil) else {
+                continue
+            }
+            for file in files where file.pathExtension == "js" {
+                guard let content = try? String(contentsOf: file, encoding: .utf8),
+                      content.contains("OAUTH_CLIENT_ID") else {
+                    continue
+                }
+                if let cid = firstRegexCapture(#"OAUTH_CLIENT_ID\s*=\s*"([^"]+)""#, in: content),
+                   let csec = firstRegexCapture(#"OAUTH_CLIENT_SECRET\s*=\s*"([^"]+)""#, in: content) {
+                    return (cid, csec)
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func firstRegexCapture(_ pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[range])
     }
 
     private func buildCLILane(
@@ -215,7 +395,9 @@ public struct GeminiAdapter: ProviderAdapter {
     public static func parseGCPQuotaPayload(_ json: [String: Any], now: Date = Date()) -> [QuotaWindow] {
         var windows: [QuotaWindow] = []
         if let buckets = json["buckets"] as? [[String: Any]] {
-            for (idx, bucket) in buckets.enumerated() {
+            // Keep the tightest bucket per model family (e.g. Pro vs Flash) to avoid duplicate rows
+            var byFamily: [String: (label: String, usedPct: Double, resetAt: Date?)] = [:]
+            for bucket in buckets {
                 let modelId = (bucket["modelId"] as? String) ?? "gemini"
                 let remainingFraction = DateParsing.doubleValue(bucket["remainingFraction"])
                 let usedPct: Double
@@ -227,13 +409,35 @@ public struct GeminiAdapter: ProviderAdapter {
                     continue
                 }
                 let resetAt = DateParsing.parseEpochOrISO(bucket["resetTime"])
+                let lower = modelId.lowercased()
+                let familyKey: String
+                let familyLabel: String
+                if lower.contains("pro") {
+                    familyKey = "gemini_pro"
+                    familyLabel = "Gemini Pro Quota"
+                } else if lower.contains("flash") {
+                    familyKey = "gemini_flash"
+                    familyLabel = "Gemini Flash Quota"
+                } else {
+                    familyKey = "gcp_\(modelId)"
+                    familyLabel = "Code Assist (\(modelId))"
+                }
+                if let existing = byFamily[familyKey] {
+                    if usedPct > existing.usedPct {
+                        byFamily[familyKey] = (familyLabel, usedPct, resetAt ?? existing.resetAt)
+                    }
+                } else {
+                    byFamily[familyKey] = (familyLabel, usedPct, resetAt)
+                }
+            }
+            for (key, entry) in byFamily.sorted(by: { $0.key < $1.key }) {
                 windows.append(QuotaWindow(
-                    id: "gcp_\(modelId)_\(idx)",
-                    label: "Code Assist (\(modelId))",
+                    id: key,
+                    label: entry.label,
                     unit: .percent,
-                    used: usedPct,
+                    used: entry.usedPct,
                     limit: 100.0,
-                    resetsAt: resetAt,
+                    resetsAt: entry.resetAt,
                     windowDurationSec: 86400,
                     now: now
                 ))

@@ -146,6 +146,8 @@ private struct AccountsSettingsPane: View {
     private func syncInputs() {
         cliDirInput = selectedAccount?.cliConfigDir ?? ""
         secretInput = ""
+        feedbackMessage = ""
+        feedbackIsError = false
         if let p = selectedAccount?.provider {
             switch p {
             case .claude, .grok: selectedKind = .sessionCookie
@@ -189,84 +191,171 @@ private struct AccountsSettingsPane: View {
                     }
                 }
 
-                // Plain-English guided setup box
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("How to connect \(account.provider.displayName)")
-                        .font(.system(size: 11.5, weight: .semibold))
-                    Text(setupInstructions(for: account.provider, isSecondary: !account.resolvedAllowGlobalCLI))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                // Primary Method for Claude & Codex: CLI Profile Folder + One-Click Import & Test
+                if account.provider == .claude || account.provider == .codex {
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack {
+                            Text("Recommended: Import from \(account.provider == .claude ? "Claude Code" : "Codex") CLI")
+                                .font(.system(size: 12, weight: .semibold))
+                            Spacer()
+                            Button {
+                                viewModel.openReauth(for: account.provider)
+                            } label: {
+                                Label("Dashboard", systemImage: "arrow.up.right.square")
+                                    .font(.system(size: 10.5, weight: .medium))
+                            }
+                            .buttonStyle(.link)
+                        }
 
-                    if account.provider == .claude {
+                        Text(account.provider == .claude
+                            ? "Pick the CLI profile folder for this account (e.g. ~/.claude for Personal, ~/.claude-work for Work), then click Import & Test. Headroom reads that profile's exact Keychain token."
+                            : "Pick the CODEX_HOME folder for this account (e.g. ~/.codex for Personal, ~/.codex-work for Work), then click Import & Test. Supports both auth.json and macOS Keychain keyring.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 6) {
+                            TextField(account.provider == .claude ? "~/.claude" : "~/.codex", text: $cliDirInput)
+                                .textFieldStyle(.roundedBorder)
+
+                            Button("Browse...") {
+                                if let chosen = pickFolderPanel() {
+                                    cliDirInput = chosen
+                                    viewModel.updateAccountCLIDir(
+                                        provider: account.provider,
+                                        accountLabel: account.label,
+                                        cliConfigDir: chosen
+                                    )
+                                }
+                            }
+                            .controlSize(.small)
+                        }
+
                         HStack(spacing: 8) {
                             Button {
                                 isTestingConnection = true
                                 feedbackMessage = ""
+                                let folder = cliDirInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                                viewModel.updateAccountCLIDir(
+                                    provider: account.provider,
+                                    accountLabel: account.label,
+                                    cliConfigDir: folder
+                                )
                                 Task {
-                                    let outcome = await viewModel.importClaudeCodeFromKeychain(accountLabel: account.label)
+                                    let outcome: (ok: Bool, message: String)
+                                    if account.provider == .claude {
+                                        outcome = await viewModel.importClaudeCodeFromKeychain(
+                                            accountLabel: account.label,
+                                            cliConfigDir: folder.isEmpty ? nil : folder
+                                        )
+                                    } else {
+                                        outcome = await viewModel.importCodexFromCLI(
+                                            accountLabel: account.label,
+                                            cliConfigDir: folder.isEmpty ? nil : folder
+                                        )
+                                    }
                                     feedbackIsError = !outcome.ok
                                     feedbackMessage = outcome.message
                                     isTestingConnection = false
                                 }
                             } label: {
-                                Label("Import from Claude Code CLI", systemImage: "key.horizontal.fill")
-                                    .font(.system(size: 11.5, weight: .medium))
+                                if isTestingConnection {
+                                    HStack(spacing: 5) {
+                                        ProgressView().controlSize(.mini)
+                                        Text("Importing & Testing...")
+                                    }
+                                } else {
+                                    let targetName = cliDirInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                        ? (account.provider == .claude ? "~/.claude" : "~/.codex")
+                                        : cliDirInput
+                                    Label("Import & Test from \(targetName)", systemImage: "key.horizontal.fill")
+                                        .font(.system(size: 11.5, weight: .medium))
+                                }
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                             .disabled(isTestingConnection)
 
-                            Button {
-                                viewModel.openReauth(for: .claude)
-                            } label: {
-                                Label("Open claude.ai", systemImage: "arrow.up.right.square")
-                                    .font(.system(size: 11, weight: .medium))
+                            if connected && summary.contains("keychain:") {
+                                Button("Clear", role: .destructive) {
+                                    viewModel.clearCredentials(provider: account.provider, accountLabel: account.label)
+                                    feedbackIsError = false
+                                    feedbackMessage = "Cleared saved Keychain credential."
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                             }
-                            .buttonStyle(.link)
                         }
-                        .padding(.top, 2)
-                    } else if account.provider == .grok && viewModel.isCursorOnUnifiedXSubscription {
-                        HStack(alignment: .top, spacing: 7) {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(HeadroomTheme.sharedPool)
-                                .font(.system(size: 12))
-                                .padding(.top, 1)
-                            Text("Already tracked via Cursor (Unified X Subscription): your shared X Weekly Grok Pool is already live under Cursor. Only add a Grok cookie or xAI API key below if you want standalone xAI API credits or a separate Grok account.")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.primary)
-                                .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else {
+                    // Guided setup card for Cursor, Grok, Gemini
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("How to connect \(account.provider.displayName)")
+                            .font(.system(size: 11.5, weight: .semibold))
+                        Text(setupInstructions(for: account.provider, isSecondary: !account.resolvedAllowGlobalCLI))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if account.provider == .grok && viewModel.isCursorOnUnifiedXSubscription {
+                            HStack(alignment: .top, spacing: 7) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundStyle(HeadroomTheme.sharedPool)
+                                    .font(.system(size: 12))
+                                    .padding(.top, 1)
+                                Text("Already tracked via Cursor (Unified X Subscription): your shared X Weekly Grok Pool is already live under Cursor. Only add a Grok cookie or xAI API key below if you want standalone xAI API credits or a separate Grok account.")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.primary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(8)
+                            .background(HeadroomTheme.sharedPool.opacity(0.11), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                         }
-                        .padding(8)
-                        .background(HeadroomTheme.sharedPool.opacity(0.11), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                         if account.provider.reauthURL != nil {
                             Button {
                                 viewModel.openReauth(for: account.provider)
                             } label: {
-                                Label("Open Grok Dashboard", systemImage: "arrow.up.right.square")
+                                Label("Open \(account.provider.displayName) Dashboard", systemImage: "arrow.up.right.square")
                                     .font(.system(size: 11, weight: .medium))
                             }
                             .buttonStyle(.link)
+                            .padding(.top, 2)
                         }
-                    } else if account.provider.reauthURL != nil {
-                        Button {
-                            viewModel.openReauth(for: account.provider)
-                        } label: {
-                            Label("Open \(account.provider.displayName) Dashboard", systemImage: "arrow.up.right.square")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .buttonStyle(.link)
-                        .padding(.top, 2)
                     }
+                    .padding(11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                .padding(11)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                // Keychain credential input
+                // Live test feedback banner (always visible right under primary action)
+                if !feedbackMessage.isEmpty {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: feedbackIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve)
+                            .font(.system(size: 12))
+                            .padding(.top, 1)
+                        Text(feedbackMessage)
+                            .font(.system(size: 11))
+                            .foregroundStyle(feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        (feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve).opacity(0.1),
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    )
+                }
+
+                // Manual Keychain credential input (primary for Grok, alternative for Claude/Codex/Cursor/Gemini)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Keychain Credential (Zero Passwords)")
+                    Text(account.provider == .claude || account.provider == .codex
+                        ? "Or Paste Browser Cookie / Token Manually"
+                        : "Keychain Credential (Zero Passwords)")
                         .font(.system(size: 12, weight: .semibold))
 
                     Picker("Type", selection: $selectedKind) {
@@ -323,58 +412,13 @@ private struct AccountsSettingsPane: View {
                         .controlSize(.small)
                         .disabled(isTestingConnection || secretInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                        if connected && summary.contains("keychain:") {
+                        if connected && summary.contains("keychain:") && account.provider != .claude && account.provider != .codex {
                             Button("Clear Saved Keychain", role: .destructive) {
                                 viewModel.clearCredentials(provider: account.provider, accountLabel: account.label)
                                 feedbackIsError = false
                                 feedbackMessage = "Cleared saved Keychain credential."
                             }
                             .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                    }
-                }
-
-                // Optional CLI profile folder picker (for Claude, Codex, Gemini multi-profile setups)
-                if account.provider == .claude || account.provider == .codex || account.provider == .gemini {
-                    Divider()
-                        .opacity(0.5)
-
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("Local CLI Profile Folder (Optional)")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text("If you run a separate CLI profile (e.g. ~/.claude-work or ~/.codex-work), pick that folder instead of pasting a cookie.")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 8) {
-                            TextField("Default (automatic for Personal)", text: $cliDirInput)
-                                .textFieldStyle(.roundedBorder)
-
-                            Button("Browse...") {
-                                if let chosen = pickFolderPanel() {
-                                    cliDirInput = chosen
-                                    viewModel.updateAccountCLIDir(
-                                        provider: account.provider,
-                                        accountLabel: account.label,
-                                        cliConfigDir: chosen
-                                    )
-                                    feedbackMessage = "Linked CLI folder \(chosen)."
-                                }
-                            }
-                            .controlSize(.small)
-
-                            Button("Save") {
-                                viewModel.updateAccountCLIDir(
-                                    provider: account.provider,
-                                    accountLabel: account.label,
-                                    cliConfigDir: cliDirInput
-                                )
-                                feedbackMessage = cliDirInput.isEmpty
-                                    ? "Cleared custom CLI folder."
-                                    : "Saved CLI folder \(cliDirInput)."
-                            }
                             .controlSize(.small)
                         }
                     }
@@ -405,25 +449,6 @@ private struct AccountsSettingsPane: View {
                         }
                         .labelsHidden()
                     }
-                }
-
-                if !feedbackMessage.isEmpty {
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: feedbackIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                            .foregroundStyle(feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve)
-                            .font(.system(size: 12))
-                            .padding(.top, 1)
-                        Text(feedbackMessage)
-                            .font(.system(size: 11))
-                            .foregroundStyle(feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        (feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve).opacity(0.1),
-                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    )
                 }
             }
             .padding(18)
@@ -617,6 +642,15 @@ private struct AddAccountSheet: View {
                             accountLabel: clean,
                             kind: credentialKind
                         )
+                    } else if authMode == 1 && !cliFolder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        let folder = cliFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+                        Task {
+                            if provider == .claude {
+                                _ = await viewModel.importClaudeCodeFromKeychain(accountLabel: clean, cliConfigDir: folder)
+                            } else if provider == .codex {
+                                _ = await viewModel.importCodexFromCLI(accountLabel: clean, cliConfigDir: folder)
+                            }
+                        }
                     }
                     dismiss()
                 }

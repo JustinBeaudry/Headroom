@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import CryptoKit
 
 public struct DiscoveredCredential: Sendable, Hashable {
     public let kind: CredentialKind
@@ -159,18 +160,119 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
         return value
     }
 
-    // MARK: - User-Initiated Claude Code Keychain Import
+    // MARK: - User-Initiated Multi-Profile Keychain Imports
 
-    /// Explicitly reads Claude Code's macOS Login Keychain item ("Claude Code-credentials").
+    /// Computes Claude Code's macOS Keychain service name for a config directory.
+    /// Default (`~/.claude` or nil) uses `"Claude Code-credentials"`; custom `CLAUDE_CONFIG_DIR`
+    /// paths (e.g. `~/.claude-work`) use `"Claude Code-credentials-<sha256_prefix_8>"`.
+    public static func claudeKeychainServiceName(
+        for cliConfigDir: String?,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String {
+        guard let raw = cliConfigDir?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return "Claude Code-credentials"
+        }
+        let expanded = expandTilde(raw, homeDirectory: homeDirectory)
+        let defaultPath = homeDirectory.appendingPathComponent(".claude").standardizedFileURL.path
+        let normalized = URL(fileURLWithPath: expanded).standardizedFileURL.path
+        if normalized == defaultPath {
+            return "Claude Code-credentials"
+        }
+        let hash = sha256Hex(normalized)
+        return "Claude Code-credentials-\(hash.prefix(8))"
+    }
+
+    /// Computes Codex CLI's macOS Keychain account key (`cli|<sha256_prefix_16>`) for a `CODEX_HOME` directory
+    /// when `cli_auth_credentials_store = "keyring"`.
+    public static func codexKeychainAccountName(
+        for cliConfigDir: String?,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String {
+        let raw = cliConfigDir?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path: String
+        if let raw, !raw.isEmpty {
+            path = URL(fileURLWithPath: expandTilde(raw, homeDirectory: homeDirectory)).standardizedFileURL.path
+        } else {
+            path = homeDirectory.appendingPathComponent(".codex").standardizedFileURL.path
+        }
+        let hash = sha256Hex(path)
+        return "cli|\(hash.prefix(16))"
+    }
+
+    /// Explicitly reads Claude Code's macOS Login Keychain item for the given profile directory.
     /// Call ONLY in response to an explicit user action (button click or CLI command),
     /// since macOS may display a one-time Keychain permission prompt.
-    public func importClaudeCodeKeychainToken() -> String? {
+    public func importClaudeCodeKeychainToken(cliConfigDir: String? = nil) -> String? {
+        // First check file-based .credentials.json inside cliConfigDir if present
+        if let raw = cliConfigDir?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let dir = URL(fileURLWithPath: Self.expandTilde(raw, homeDirectory: homeDirectory), isDirectory: true)
+            if let fileCred = readClaudeCodeOAuthToken(in: dir, allowExternalKeychain: false) {
+                return fileCred.value
+            }
+        }
         guard let keychain = secretStore as? KeychainStore else { return nil }
-        guard let raw = keychain.readExternalGenericPasswordInteractive(service: "Claude Code-credentials"),
+        let serviceName = Self.claudeKeychainServiceName(for: cliConfigDir, homeDirectory: homeDirectory)
+        guard let raw = keychain.readExternalGenericPasswordInteractive(service: serviceName),
               let data = raw.data(using: .utf8) else {
             return nil
         }
         return extractClaudeOAuthToken(from: data)
+    }
+
+    /// Explicitly imports Codex CLI credentials for a profile directory (`~/.codex` or `~/.codex-work`),
+    /// checking `<dir>/auth.json` first and then macOS Keychain `"Codex Auth"` (`cli|<sha256_16>`).
+    public func importCodexCLICredential(cliConfigDir: String? = nil) -> DiscoveredCredential? {
+        let dirPath: String
+        if let raw = cliConfigDir?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            dirPath = Self.expandTilde(raw, homeDirectory: homeDirectory)
+        } else {
+            dirPath = homeDirectory.appendingPathComponent(".codex").path
+        }
+        let dirURL = URL(fileURLWithPath: dirPath, isDirectory: true)
+
+        // 1. File-based auth.json
+        if let fileCred = readCodexCLIOAuthToken(in: dirURL) {
+            return fileCred
+        }
+
+        // 2. macOS Keychain ("Codex Auth", acct = "cli|<sha256_prefix_16>")
+        guard let keychain = secretStore as? KeychainStore else { return nil }
+        let acctKey = Self.codexKeychainAccountName(for: cliConfigDir, homeDirectory: homeDirectory)
+        guard let raw = keychain.readExternalGenericPasswordInteractive(service: "Codex Auth", account: acctKey),
+              let data = raw.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let tokens = json["tokens"] as? [String: Any],
+           let access = tokens["access_token"] as? String, !access.isEmpty {
+            var meta: [String: String] = [:]
+            if let accountId = tokens["account_id"] as? String {
+                meta["account_id"] = accountId
+            }
+            return DiscoveredCredential(kind: .oauthToken, value: access, source: "keychain:Codex Auth (\(acctKey))", metadata: meta)
+        }
+        if let access = json["access_token"] as? String, !access.isEmpty {
+            return DiscoveredCredential(kind: .oauthToken, value: access, source: "keychain:Codex Auth (\(acctKey))")
+        }
+        if let apiKey = json["OPENAI_API_KEY"] as? String, !apiKey.isEmpty {
+            return DiscoveredCredential(kind: .apiKey, value: apiKey, source: "keychain:Codex Auth (\(acctKey))")
+        }
+        return nil
+    }
+
+    private static func expandTilde(_ raw: String, homeDirectory: URL) -> String {
+        if raw == "~" {
+            return homeDirectory.path
+        }
+        if raw.hasPrefix("~/") {
+            return homeDirectory.path + String(raw.dropFirst())
+        }
+        return NSString(string: raw).expandingTildeInPath
+    }
+
+    private static func sha256Hex(_ input: String) -> String {
+        let digest = SHA256.hash(data: Data(input.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Claude Code CLI OAuth cache
@@ -242,7 +344,14 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
               let access = json["access_token"] as? String, !access.isEmpty else {
             return nil
         }
-        return DiscoveredCredential(kind: .oauthToken, value: access, source: "file:\(abbreviate(credsURL))")
+        var meta: [String: String] = ["creds_path": credsURL.path]
+        if let rt = json["refresh_token"] as? String, !rt.isEmpty {
+            meta["refresh_token"] = rt
+        }
+        if let exp = DateParsing.doubleValue(json["expiry_date"]) {
+            meta["expiry_ms"] = String(Int64(exp))
+        }
+        return DiscoveredCredential(kind: .oauthToken, value: access, source: "file:\(abbreviate(credsURL))", metadata: meta)
     }
 
     private func abbreviate(_ url: URL) -> String {

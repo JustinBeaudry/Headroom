@@ -290,6 +290,25 @@ final class AdapterTests: XCTestCase {
         // Claude work account picks up its own Keychain cookie without leaking personal local JSONL logs
         let claudeWork = AccountConfig(provider: .claude, label: "work", useLocalCLIDiscovery: false)
         XCTAssertEqual(discovery.discover(for: claudeWork).first?.value, "claude-work-cookie")
+
+        // Verify deterministic Keychain service/account hashing for multi-profile CLI folders
+        let fakeHome = URL(fileURLWithPath: "/Users/justinbeaudry", isDirectory: true)
+        XCTAssertEqual(
+            CredentialDiscovery.claudeKeychainServiceName(for: nil, homeDirectory: fakeHome),
+            "Claude Code-credentials"
+        )
+        XCTAssertEqual(
+            CredentialDiscovery.claudeKeychainServiceName(for: "~/.claude", homeDirectory: fakeHome),
+            "Claude Code-credentials"
+        )
+        XCTAssertEqual(
+            CredentialDiscovery.claudeKeychainServiceName(for: "~/.claude-work", homeDirectory: fakeHome),
+            "Claude Code-credentials-98cc452b"
+        )
+        XCTAssertEqual(
+            CredentialDiscovery.codexKeychainAccountName(for: "~/.codex-work", homeDirectory: fakeHome),
+            "cli|9a36fbe52046e125"
+        )
     }
 
     func testGeminiLaneSwitchingCLIVsGCPQuota() async throws {

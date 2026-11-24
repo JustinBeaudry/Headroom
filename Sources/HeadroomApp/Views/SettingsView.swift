@@ -127,6 +127,7 @@ private struct AccountsSettingsPane: View {
             // Right detail pane: Guided setup for the selected account
             if let account = selectedAccount {
                 accountDetailPane(for: account)
+                    .id(account.id)
             } else {
                 VStack(spacing: 10) {
                     Text("No accounts configured")
@@ -379,19 +380,23 @@ private struct AccountsSettingsPane: View {
                     }
                 }
 
-                // Gemini lane toggle
-                if account.provider == .gemini,
-                   let idx = viewModel.config.accounts.firstIndex(where: { $0.id == account.id }) {
+                // Gemini lane toggle (look up by stable account ID inside Binding — never capture raw array index)
+                if account.provider == .gemini {
+                    let accountID = account.id
                     Divider()
                         .opacity(0.5)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Gemini Quota Lane")
                             .font(.system(size: 12, weight: .semibold))
                         Picker("Lane", selection: Binding(
-                            get: { viewModel.config.accounts[idx].geminiLane ?? .auto },
+                            get: {
+                                viewModel.config.accounts.first(where: { $0.id == accountID })?.geminiLane ?? .auto
+                            },
                             set: { newLane in
-                                viewModel.config.accounts[idx].geminiLane = newLane
-                                viewModel.saveConfigAsync()
+                                if let idx = viewModel.config.accounts.firstIndex(where: { $0.id == accountID }) {
+                                    viewModel.config.accounts[idx].geminiLane = newLane
+                                    viewModel.saveConfigAsync()
+                                }
                             }
                         )) {
                             ForEach(GeminiLane.allCases, id: \.self) { lane in

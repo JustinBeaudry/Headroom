@@ -35,7 +35,6 @@ public final class HeadroomViewModel {
     public var isRefreshing: Bool = false
     public var hasCompletedInitialLoad: Bool = false
     public var privacyMode: Bool = false
-    public var demoMode: Bool = false
     public var lastAlerts: [HeadroomAlert] = []
     public var isActivePolling: Bool = true
     public var nextPollSeconds: Int = 90
@@ -131,9 +130,7 @@ public final class HeadroomViewModel {
                 self.isActivePolling = await self.engine.isUserActive()
                 try? await Task.sleep(nanoseconds: UInt64(max(30, interval)) * 1_000_000_000)
                 if Task.isCancelled { break }
-                if !self.demoMode {
-                    await self.refresh(force: false)
-                }
+                await self.refresh(force: false)
             }
         }
 
@@ -223,11 +220,6 @@ public final class HeadroomViewModel {
     }
 
     public func refresh(force: Bool = true) async {
-        if demoMode {
-            state = DemoFixtures.makeDemoState()
-            hasCompletedInitialLoad = true
-            return
-        }
         isRefreshing = true
         defer {
             isRefreshing = false
@@ -261,17 +253,6 @@ public final class HeadroomViewModel {
         credentialSummaryByAccount = map
     }
 
-    public func toggleDemoMode() {
-        demoMode.toggle()
-        selectedAccountFilter = nil
-        if demoMode {
-            state = DemoFixtures.makeDemoState()
-            hasCompletedInitialLoad = true
-        } else {
-            Task { await refresh(force: true) }
-        }
-    }
-
     public func toggleDisplayMode() {
         config.menuBarDisplayMode = (config.menuBarDisplayMode == .mostUrgent) ? .miniBars : .mostUrgent
         saveConfigAsync()
@@ -282,9 +263,7 @@ public final class HeadroomViewModel {
         refreshCredentialSummaries()
         Task {
             try? await engine.saveConfig(updated)
-            if !demoMode {
-                await refresh(force: false)
-            }
+            await refresh(force: false)
         }
     }
 
@@ -396,7 +375,7 @@ public final class HeadroomViewModel {
     /// Distinct account labels present in the current state (for filter pills).
     public var availableAccountLabels: [String] {
         let fromState = Set(state.snapshots.map(\.accountLabel))
-        let fromConfig = demoMode ? Set<String>() : Set(config.accounts.filter(\.enabled).map(\.label))
+        let fromConfig = Set(config.accounts.filter(\.enabled).map(\.label))
         let combined = fromState.union(fromConfig)
         return combined.sorted { lhs, rhs in
             if lhs == "personal" { return true }
@@ -413,7 +392,7 @@ public final class HeadroomViewModel {
 
     public func hasMultipleAccounts(for provider: ProviderID) -> Bool {
         let countInState = Set(state.snapshots.filter { $0.provider == provider }.map(\.accountLabel)).count
-        let countInConfig = demoMode ? 0 : Set(config.accounts.filter { $0.provider == provider && $0.enabled }.map(\.label)).count
+        let countInConfig = Set(config.accounts.filter { $0.provider == provider && $0.enabled }.map(\.label)).count
         return max(countInState, countInConfig) > 1
     }
 
@@ -458,9 +437,6 @@ public final class HeadroomViewModel {
     }
 
     public var relativeUpdatedText: String {
-        if demoMode {
-            return "Demo telemetry"
-        }
         if privacyMode {
             return "Screen-share privacy on"
         }

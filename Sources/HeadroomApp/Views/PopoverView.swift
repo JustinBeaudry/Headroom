@@ -114,18 +114,8 @@ public struct PopoverView: View {
     private var header: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("Headroom")
-                        .font(.system(size: 14, weight: .semibold))
-                    if viewModel.demoMode {
-                        Text("DEMO")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(HeadroomTheme.sharedPool)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(HeadroomTheme.sharedPool.opacity(0.15), in: Capsule())
-                    }
-                }
+                Text("Headroom")
+                    .font(.system(size: 14, weight: .semibold))
                 HStack(spacing: 5) {
                     Circle()
                         .fill(viewModel.isRefreshing ? HeadroomTheme.sharedPool : HeadroomTheme.reserve)
@@ -284,24 +274,16 @@ public struct PopoverView: View {
                 .foregroundStyle(.secondary)
             Text("Connect a provider to see headroom")
                 .font(.system(size: 13, weight: .semibold))
-            Text("Headroom automatically reads local CLI sessions for Codex, Gemini, and Cursor. Add a cookie in Settings for Claude or Grok, or preview with Demo.")
+            Text("Headroom automatically reads local CLI sessions for Codex, Gemini, and Cursor. Add a cookie in Settings for Claude or Grok.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Button("Preview Demo") {
-                    viewModel.toggleDemoMode()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-
-                Button("Open Settings") {
-                    openSettingsWindow()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+            Button("Open Settings") {
+                openSettingsWindow()
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
             .padding(.top, 2)
         }
         .padding(.horizontal, 20)
@@ -310,14 +292,10 @@ public struct PopoverView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Button(viewModel.demoMode ? "Exit Demo" : "Demo Mode") {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    viewModel.toggleDemoMode()
-                }
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(viewModel.demoMode ? HeadroomTheme.sharedPool : .secondary)
+            Text(viewModel.currentAppVersion.tagString)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
 
             Spacer()
 

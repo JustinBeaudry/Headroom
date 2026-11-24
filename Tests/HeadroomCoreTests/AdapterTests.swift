@@ -147,6 +147,40 @@ final class AdapterTests: XCTestCase {
         XCTAssertEqual(tp.limit, 50.0)
     }
 
+    func testCursorGetSandUsageStatusConnectRPCLiveShape() async throws {
+        let ctx = try makeContext(
+            secrets: [(.cursor, "personal", .oauthToken, "cursor-jwt")]
+        ) { req in
+            if req.url.path.contains("GetSandUsageStatus") {
+                let body = """
+                {
+                  "currentPeriodStart": "2026-11-20T15:10:15.472Z",
+                  "nextResetTimestampUtc": "2026-11-27T15:10:15.472Z",
+                  "usagePercent": 62,
+                  "grokPlanLabel": "Grok Bot Plan",
+                  "cursorPlanName": "Super",
+                  "isUnified": true,
+                  "billingBrand": "SAND_BILLING_BRAND_GROK",
+                  "additionalUsageLimit": {
+                    "state": "STATE_NONE",
+                    "spentCents": "2342",
+                    "resetsAt": "2026-12-01T00:00:00Z"
+                  }
+                }
+                """.data(using: .utf8)!
+                return HTTPResponse(statusCode: 200, body: body)
+            }
+            return HTTPResponse(statusCode: 200, body: #"{"planUsage":{"totalPercentUsed":100}}"#.data(using: .utf8)!)
+        }
+
+        let snap = await CursorAdapter().fetchUsage(account: AccountConfig(provider: .cursor), context: ctx)
+        XCTAssertEqual(snap.status, .ok)
+        XCTAssertEqual(snap.billingModel, .xSubscriptionUnified)
+        XCTAssertEqual(snap.windows.first(where: { $0.id == "x_weekly_pool" })?.used, 62)
+        XCTAssertEqual(snap.windows.first(where: { $0.id == "x_weekly_pool" })?.sharedPoolId, CursorAdapter.xSubscriptionPoolID)
+        XCTAssertEqual(snap.windows.first(where: { $0.id == "third_party_spend" })?.used ?? 0, 23.42, accuracy: 0.01)
+    }
+
     func testCursorLegacyMonthlyBillingParsesCorrectly() async throws {
         let ctx = try makeContext(
             secrets: [(.cursor, "personal", .oauthToken, "cursor-jwt")]

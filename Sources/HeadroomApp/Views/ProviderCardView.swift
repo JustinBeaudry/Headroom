@@ -197,7 +197,11 @@ public struct QuotaWindowRow: View {
                     Text(window.paceStatus.displayLabel)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(paceColor(window.paceStatus, headroom: window.headroomPercent))
-                    if let detail = window.paceDetail,
+                    if window.usedPercent >= 100.0 {
+                        Text("• exhausted")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.red)
+                    } else if let detail = window.paceDetail,
                        detail.willExhaustBeforeReset,
                        let eta = detail.projectedExhaustionAt {
                         Text("• out in ~\(PaceCalculator.formatCountdown(until: eta))")

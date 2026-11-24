@@ -404,7 +404,9 @@ struct HeadroomCLI {
         let headroom = String(format: "%3.0f%% left", w.headroomPercent)
         let pace = w.paceStatus.displayLabel
         var projection = ""
-        if let detail = w.paceDetail, detail.willExhaustBeforeReset, let exhaust = detail.projectedExhaustionAt {
+        if w.usedPercent >= 100.0 {
+            projection = " (⚠ exhausted)"
+        } else if let detail = w.paceDetail, detail.willExhaustBeforeReset, let exhaust = detail.projectedExhaustionAt {
             projection = " (⚠ runs out in ~\(PaceCalculator.formatCountdown(until: exhaust)))"
         }
         print("    \(w.label.padding(toLength: 24, withPad: " ", startingAt: 0)) \(bar) \(headroom)  [\(pace)]  reset \(countdown)\(projection)")

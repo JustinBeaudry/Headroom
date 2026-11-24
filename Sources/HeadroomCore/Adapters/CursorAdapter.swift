@@ -61,15 +61,27 @@ public struct CursorAdapter: ProviderAdapter {
                 }
             }
 
-            // 2. Also query `get-sand-usage-status` to detect unified X Subscription
-            //    (`isUnified` / `SAND_BILLING_BRAND_GROK`). Note: web dashboard endpoint may return
-            //    403 for Bearer JWTs while `api2.cursor.sh` succeeds, so only treat auth failure as fatal
-            //    when `periodJSON` is also unavailable.
+            // 2. Query `GetSandUsageStatus` on api2.cursor.sh (Connect-RPC, works with local SQLite Bearer JWT)
+            //    with fallback to `cursor.com/api/dashboard/get-sand-usage-status` for web session cookies.
             var sandJSON: [String: Any]?
             var sandAuthFailed = false
             var sandStatusCode: Int?
-            if let sandURL = URL(string: "https://cursor.com/api/dashboard/get-sand-usage-status") {
-                let sandResp = try await context.httpClient.send(HTTPRequest(url: sandURL, method: "POST", headers: headers, body: Data("{}".utf8)))
+            let sandEndpoints: [(String, Bool)] = cookieCred != nil
+                ? [
+                    ("https://cursor.com/api/dashboard/get-sand-usage-status", false),
+                    ("https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus", true)
+                ]
+                : [
+                    ("https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus", true),
+                    ("https://cursor.com/api/dashboard/get-sand-usage-status", false)
+                ]
+            for (urlStr, isConnectRPC) in sandEndpoints where sandJSON == nil {
+                guard let sandURL = URL(string: urlStr) else { continue }
+                var reqHeaders = headers
+                if isConnectRPC {
+                    reqHeaders["Connect-Protocol-Version"] = "1"
+                }
+                let sandResp = try await context.httpClient.send(HTTPRequest(url: sandURL, method: "POST", headers: reqHeaders, body: Data("{}".utf8)))
                 sandStatusCode = sandResp.statusCode
                 if sandResp.isAuthFailure {
                     sandAuthFailed = true
@@ -157,13 +169,20 @@ public struct CursorAdapter: ProviderAdapter {
 
             if let pool = weeklyPoolObj {
                 let usedPct = DateParsing.doubleValue(
-                    pool["usedPercent"] ?? pool["used_percent"] ?? pool["utilizationPercent"] ?? pool["percentUsed"]
+                    pool["usagePercent"] ?? pool["usedPercent"] ?? pool["used_percent"] ?? pool["utilizationPercent"] ?? pool["percentUsed"]
                 )
                 let resetAt = DateParsing.parseEpochOrISO(
-                    pool["resetsAt"] ?? pool["resets_at"] ?? pool["resetTimestamp"] ?? pool["cycleEnd"]
+                    pool["nextResetTimestampUtc"] ?? pool["resetsAt"] ?? pool["resets_at"] ?? pool["resetTimestamp"] ?? pool["cycleEnd"]
                 )
+                let periodStart = DateParsing.parseEpochOrISO(pool["currentPeriodStart"] ?? pool["periodStart"])
+                let durationSec: Int
+                if let start = periodStart, let end = resetAt, end > start {
+                    durationSec = Int(end.timeIntervalSince(start))
+                } else {
+                    durationSec = 604800
+                }
                 if let usedPct {
-                    let normalized = (usedPct > 0 && usedPct <= 1.0 && pool["percentUsed"] == nil) ? usedPct * 100.0 : usedPct
+                    let normalized = (usedPct > 0 && usedPct <= 1.0 && pool["usagePercent"] == nil && pool["percentUsed"] == nil) ? usedPct * 100.0 : usedPct
                     windows.append(QuotaWindow(
                         id: "x_weekly_pool",
                         label: "X Weekly Pool (Shared)",
@@ -171,23 +190,24 @@ public struct CursorAdapter: ProviderAdapter {
                         used: normalized,
                         limit: 100.0,
                         resetsAt: resetAt,
-                        windowDurationSec: 604800,
+                        windowDurationSec: durationSec,
                         sharedPoolId: xSubscriptionPoolID,
                         now: now
                     ))
                 }
             }
 
-            // Separate 3rd-party model API spend cap (Claude/OpenAI/etc. inside Cursor)
+            // Separate 3rd-party / additional API spend cap (Claude/OpenAI/etc. inside Cursor)
             let thirdPartyObj = (sandJSON?["thirdPartySpend"] as? [String: Any])
                 ?? (sandJSON?["thirdPartyUsage"] as? [String: Any])
+                ?? (sandJSON?["additionalUsageLimit"] as? [String: Any])
                 ?? (periodJSON?["thirdPartySpend"] as? [String: Any])
                 ?? (periodJSON?["apiSpend"] as? [String: Any])
 
             if let tp = thirdPartyObj {
                 let (usedUSD, limitUSD) = extractDollars(from: tp)
+                let resetAt = DateParsing.parseEpochOrISO(tp["resetsAt"] ?? tp["billingCycleEnd"] ?? periodJSON?["billingCycleEnd"])
                 if let usedUSD, let limitUSD, limitUSD > 0 {
-                    let resetAt = DateParsing.parseEpochOrISO(tp["resetsAt"] ?? tp["billingCycleEnd"] ?? periodJSON?["billingCycleEnd"])
                     windows.append(QuotaWindow(
                         id: "third_party_spend",
                         label: "3rd-Party API Cap",
@@ -198,13 +218,33 @@ public struct CursorAdapter: ProviderAdapter {
                         windowDurationSec: 2_592_000,
                         now: now
                     ))
+                } else if let spentCents = DateParsing.doubleValue(tp["spentCents"]), spentCents > 0 {
+                    let spentUSD = spentCents / 100.0
+                    let inferredLimit = DateParsing.doubleValue(tp["limitCents"]).map { $0 / 100.0 } ?? max(spentUSD, 50.0)
+                    windows.append(QuotaWindow(
+                        id: "third_party_spend",
+                        label: "Additional Usage Spend",
+                        unit: .dollars,
+                        used: spentUSD,
+                        limit: inferredLimit,
+                        resetsAt: resetAt,
+                        windowDurationSec: 2_592_000,
+                        now: now
+                    ))
                 }
             }
+
+            let planDesc = [sandJSON?["grokPlanLabel"] as? String, sandJSON?["cursorPlanName"] as? String]
+                .compactMap { $0 }
+                .joined(separator: " / ")
+            let note = planDesc.isEmpty
+                ? "Unified X Subscription detected (shared weekly Grok pool + separate 3rd-party spend cap)."
+                : "Unified X Subscription (\(planDesc)) — shared weekly Grok pool."
 
             return ParsedCursorUsage(
                 billingModel: .xSubscriptionUnified,
                 windows: windows,
-                note: "Unified X Subscription detected (shared weekly Grok pool + separate 3rd-party spend cap)."
+                note: note
             )
         }
 

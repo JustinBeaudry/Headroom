@@ -49,6 +49,8 @@ private struct AccountsSettingsPane: View {
     @State private var secretInput: String = ""
     @State private var cliDirInput: String = ""
     @State private var feedbackMessage: String = ""
+    @State private var feedbackIsError: Bool = false
+    @State private var isTestingConnection: Bool = false
 
     private var selectedAccount: AccountConfig? {
         viewModel.config.accounts.first {
@@ -187,7 +189,7 @@ private struct AccountsSettingsPane: View {
                 }
 
                 // Plain-English guided setup box
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("How to connect \(account.provider.displayName)")
                         .font(.system(size: 11.5, weight: .semibold))
                     Text(setupInstructions(for: account.provider, isSecondary: !account.resolvedAllowGlobalCLI))
@@ -195,7 +197,58 @@ private struct AccountsSettingsPane: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    if account.provider.reauthURL != nil {
+                    if account.provider == .claude {
+                        HStack(spacing: 8) {
+                            Button {
+                                isTestingConnection = true
+                                feedbackMessage = ""
+                                Task {
+                                    let outcome = await viewModel.importClaudeCodeFromKeychain(accountLabel: account.label)
+                                    feedbackIsError = !outcome.ok
+                                    feedbackMessage = outcome.message
+                                    isTestingConnection = false
+                                }
+                            } label: {
+                                Label("Import from Claude Code CLI", systemImage: "key.horizontal.fill")
+                                    .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(isTestingConnection)
+
+                            Button {
+                                viewModel.openReauth(for: .claude)
+                            } label: {
+                                Label("Open claude.ai", systemImage: "arrow.up.right.square")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(.link)
+                        }
+                        .padding(.top, 2)
+                    } else if account.provider == .grok && viewModel.isCursorOnUnifiedXSubscription {
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(HeadroomTheme.sharedPool)
+                                .font(.system(size: 12))
+                                .padding(.top, 1)
+                            Text("Already tracked via Cursor (Unified X Subscription): your shared X Weekly Grok Pool is already live under Cursor. Only add a Grok cookie or xAI API key below if you want standalone xAI API credits or a separate Grok account.")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(8)
+                        .background(HeadroomTheme.sharedPool.opacity(0.11), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+                        if account.provider.reauthURL != nil {
+                            Button {
+                                viewModel.openReauth(for: account.provider)
+                            } label: {
+                                Label("Open Grok Dashboard", systemImage: "arrow.up.right.square")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(.link)
+                        }
+                    } else if account.provider.reauthURL != nil {
                         Button {
                             viewModel.openReauth(for: account.provider)
                         } label: {
@@ -223,26 +276,56 @@ private struct AccountsSettingsPane: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
 
-                    SecureField(placeholderFor(provider: account.provider, kind: selectedKind), text: $secretInput)
-                        .textFieldStyle(.roundedBorder)
+                    HStack(spacing: 6) {
+                        SecureField(placeholderFor(provider: account.provider, kind: selectedKind), text: $secretInput)
+                            .textFieldStyle(.roundedBorder)
+
+                        Button("Paste") {
+                            if let clip = NSPasteboard.general.string(forType: .string) {
+                                secretInput = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
 
                     HStack(spacing: 8) {
-                        Button("Save & Connect") {
-                            feedbackMessage = viewModel.saveCredential(
-                                value: secretInput,
-                                provider: account.provider,
-                                accountLabel: account.label,
-                                kind: selectedKind
-                            )
-                            secretInput = ""
+                        Button {
+                            isTestingConnection = true
+                            feedbackMessage = ""
+                            let toSave = secretInput
+                            Task {
+                                let outcome = await viewModel.saveAndTestCredential(
+                                    value: toSave,
+                                    provider: account.provider,
+                                    accountLabel: account.label,
+                                    kind: selectedKind
+                                )
+                                feedbackIsError = !outcome.ok
+                                feedbackMessage = outcome.message
+                                if outcome.ok {
+                                    secretInput = ""
+                                }
+                                isTestingConnection = false
+                            }
+                        } label: {
+                            if isTestingConnection {
+                                HStack(spacing: 5) {
+                                    ProgressView().controlSize(.mini)
+                                    Text("Testing...")
+                                }
+                            } else {
+                                Text("Save & Test")
+                            }
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
-                        .disabled(secretInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(isTestingConnection || secretInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                         if connected && summary.contains("keychain:") {
                             Button("Clear Saved Keychain", role: .destructive) {
                                 viewModel.clearCredentials(provider: account.provider, accountLabel: account.label)
+                                feedbackIsError = false
                                 feedbackMessage = "Cleared saved Keychain credential."
                             }
                             .buttonStyle(.bordered)
@@ -320,10 +403,22 @@ private struct AccountsSettingsPane: View {
                 }
 
                 if !feedbackMessage.isEmpty {
-                    Text(feedbackMessage)
-                        .font(.system(size: 11))
-                        .foregroundStyle(HeadroomTheme.sharedPool)
-                        .padding(.top, 2)
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: feedbackIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve)
+                            .font(.system(size: 12))
+                            .padding(.top, 1)
+                        Text(feedbackMessage)
+                            .font(.system(size: 11))
+                            .foregroundStyle(feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        (feedbackIsError ? HeadroomTheme.burningFast : HeadroomTheme.reserve).opacity(0.1),
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    )
                 }
             }
             .padding(18)
@@ -334,7 +429,7 @@ private struct AccountsSettingsPane: View {
     private func setupInstructions(for provider: ProviderID, isSecondary: Bool) -> String {
         switch provider {
         case .claude:
-            return "Open claude.ai in your browser, open DevTools -> Application -> Cookies -> claude.ai, copy the `sessionKey` value, and paste it below. This tracks both claude.ai chat and Claude Code limits."
+            return "Easiest on macOS: click 'Import from Claude Code CLI' below to copy your existing Claude Code OAuth token from macOS Keychain (click Allow once). Or paste your claude.ai `sessionKey` cookie from browser DevTools -> Application -> Cookies."
         case .codex:
             if isSecondary {
                 return "For a second ChatGPT/Codex account, either paste its `__Secure-next-auth.session-token` cookie from chatgpt.com or pick its separate Codex CLI folder (e.g. ~/.codex-work) below."

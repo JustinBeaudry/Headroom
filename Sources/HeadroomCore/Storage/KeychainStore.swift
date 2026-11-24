@@ -122,6 +122,26 @@ public final class KeychainStore: SecretStore, Sendable {
         }
         return String(data: data, encoding: .utf8)
     }
+
+    /// Reads an external macOS Keychain item interactively (for explicit user-initiated imports like
+    /// "Import from Claude Code" where a one-time macOS Keychain Allow dialog is expected).
+    public func readExternalGenericPasswordInteractive(service externalService: String, account: String? = nil) -> String? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: externalService,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        if let account {
+            query[kSecAttrAccount as String] = account
+        }
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
 }
 
 /// Thread-safe in-memory secret store for tests and ephemeral runs.

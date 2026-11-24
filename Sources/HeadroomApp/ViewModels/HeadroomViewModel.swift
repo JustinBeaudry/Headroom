@@ -372,6 +372,84 @@ public final class HeadroomViewModel {
         }
     }
 
+    /// Saves a credential to Keychain, immediately polls that provider, and returns live diagnostic feedback.
+    public func saveAndTestCredential(
+        value: String,
+        provider: ProviderID,
+        accountLabel rawLabel: String,
+        kind: CredentialKind
+    ) async -> (ok: Bool, message: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return (false, "Credential cannot be empty.") }
+        let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let finalLabel = label.isEmpty ? "personal" : label
+
+        if !config.accounts.contains(where: { $0.provider == provider && $0.label == finalLabel }) {
+            let isFirstForProvider = !config.accounts.contains(where: { $0.provider == provider })
+            config.accounts.append(AccountConfig(
+                provider: provider,
+                label: finalLabel,
+                enabled: true,
+                useLocalCLIDiscovery: isFirstForProvider
+            ))
+            try? await engine.saveConfig(config)
+        }
+
+        do {
+            try keychain.setSecret(trimmed, provider: provider, accountLabel: finalLabel, kind: kind)
+        } catch {
+            return (false, "Keychain error: \(error.localizedDescription)")
+        }
+
+        refreshCredentialSummaries()
+        await engine.resetBackoff()
+        let result = await engine.poll(providers: [provider], force: true)
+        self.state = result.state
+        refreshCredentialSummaries()
+
+        if let snap = result.state.snapshots.first(where: { $0.provider == provider && $0.accountLabel == finalLabel }) {
+            return formatTestOutcome(for: snap)
+        }
+        return (true, "Saved in Keychain for \(provider.displayName) (\(finalLabel)).")
+    }
+
+    /// Explicitly imports Claude Code's OAuth token from macOS Login Keychain ("Claude Code-credentials")
+    /// into Headroom's own Keychain, then immediately tests live usage against Anthropic's OAuth endpoint.
+    public func importClaudeCodeFromKeychain(accountLabel: String) async -> (ok: Bool, message: String) {
+        guard let token = discovery.importClaudeCodeKeychainToken(), !token.isEmpty else {
+            return (false, "Could not read 'Claude Code-credentials' from macOS Keychain. Make sure Claude Code CLI is signed in (`claude`) and click Allow if macOS prompts.")
+        }
+        return await saveAndTestCredential(
+            value: token,
+            provider: .claude,
+            accountLabel: accountLabel,
+            kind: .oauthToken
+        )
+    }
+
+    private func formatTestOutcome(for snap: ProviderSnapshot) -> (Bool, String) {
+        switch snap.status {
+        case .ok:
+            if snap.windows.isEmpty {
+                return (true, "Connected to \(snap.provider.displayName), no active quota limits reported.")
+            }
+            let summary = snap.windows.map { "\($0.label): \(Int($0.headroomPercent.rounded()))% left" }.joined(separator: " · ")
+            return (true, "Connected! \(summary)")
+        case .authExpired:
+            return (false, snap.message ?? "Authentication rejected. Double-check the cookie/token value.")
+        case .incident:
+            return (false, snap.message ?? "Provider returned an error during connection test.")
+        case .stale:
+            return (false, snap.message ?? "Fell back to local telemetry; live quota check did not succeed.")
+        case .unconfigured:
+            return (false, snap.message ?? "Credential was not recognized.")
+        }
+    }
+
+    public var isCursorOnUnifiedXSubscription: Bool {
+        state.snapshots.contains { $0.provider == .cursor && $0.billingModel == .xSubscriptionUnified }
+    }
+
     public func clearCredentials(provider: ProviderID, accountLabel: String) {
         for kind in CredentialKind.allCases {
             try? keychain.deleteSecret(provider: provider, accountLabel: accountLabel, kind: kind)

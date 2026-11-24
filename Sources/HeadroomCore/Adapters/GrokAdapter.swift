@@ -93,30 +93,55 @@ public struct GrokAdapter: ProviderAdapter {
         now: Date,
         httpClient: any HTTPClient
     ) async -> DashboardOutcome {
-        guard let url = URL(string: "https://grok.com/rest/subscriptions/usage") else {
-            return .incident("Invalid Grok usage URL.")
+        let trimmed = cookie.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cookieHeader: String
+        if trimmed.lowercased().hasPrefix("cookie:") {
+            cookieHeader = String(trimmed.dropFirst("cookie:".count)).trimmingCharacters(in: .whitespaces)
+        } else if trimmed.contains("=") {
+            cookieHeader = trimmed
+        } else {
+            cookieHeader = "sso=\(trimmed)"
         }
-        let cookieHeader = cookie.contains("sso=") ? cookie : "sso=\(cookie)"
         let headers = [
             "Cookie": cookieHeader,
             "Accept": "application/json",
             "Referer": "https://grok.com/dashboard",
-            "User-Agent": "Headroom/1.0"
+            "Origin": "https://grok.com",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
         ]
 
-        do {
-            let resp = try await httpClient.send(HTTPRequest(url: url, headers: headers))
-            if resp.isAuthFailure {
-                return .authExpired("Grok dashboard session expired or requires sign-in (HTTP \(resp.statusCode)). Re-authenticate at grok.com/dashboard.")
+        let endpoints = [
+            "https://grok.com/rest/subscriptions/usage",
+            "https://grok.com/rest/rate-limits"
+        ]
+
+        var lastStatus = 0
+        var sawAuthFailure = false
+
+        for endpoint in endpoints {
+            guard let url = URL(string: endpoint) else { continue }
+            do {
+                let resp = try await httpClient.send(HTTPRequest(url: url, headers: headers))
+                lastStatus = resp.statusCode
+                if resp.isAuthFailure {
+                    sawAuthFailure = true
+                    continue
+                }
+                if resp.isSuccess, let json = resp.jsonObject() as? [String: Any] {
+                    let (windows, isUnified) = Self.parseDashboardPayload(json, now: now)
+                    if !windows.isEmpty {
+                        return .success(windows: windows, isUnifiedX: isUnified)
+                    }
+                }
+            } catch {
+                return .incident("Grok request failed: \(error.localizedDescription)")
             }
-            guard resp.isSuccess, let json = resp.jsonObject() as? [String: Any] else {
-                return .incident("Grok dashboard endpoint returned HTTP \(resp.statusCode).")
-            }
-            let (windows, isUnified) = Self.parseDashboardPayload(json, now: now)
-            return .success(windows: windows, isUnifiedX: isUnified)
-        } catch {
-            return .incident("Grok request failed: \(error.localizedDescription)")
         }
+
+        if sawAuthFailure {
+            return .authExpired("Grok rejected the session cookie (HTTP \(lastStatus)). Paste the full Cookie header (including sso and sso-rw) from grok.com/dashboard, or use XAI_API_KEY.")
+        }
+        return .incident("Grok dashboard endpoint returned HTTP \(lastStatus).")
     }
 
     private enum APIBalanceOutcome {

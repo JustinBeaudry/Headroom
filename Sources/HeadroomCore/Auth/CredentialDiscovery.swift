@@ -159,6 +159,20 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
         return value
     }
 
+    // MARK: - User-Initiated Claude Code Keychain Import
+
+    /// Explicitly reads Claude Code's macOS Login Keychain item ("Claude Code-credentials").
+    /// Call ONLY in response to an explicit user action (button click or CLI command),
+    /// since macOS may display a one-time Keychain permission prompt.
+    public func importClaudeCodeKeychainToken() -> String? {
+        guard let keychain = secretStore as? KeychainStore else { return nil }
+        guard let raw = keychain.readExternalGenericPasswordInteractive(service: "Claude Code-credentials"),
+              let data = raw.data(using: .utf8) else {
+            return nil
+        }
+        return extractClaudeOAuthToken(from: data)
+    }
+
     // MARK: - Claude Code CLI OAuth cache
 
     private func readClaudeCodeOAuthToken(in dir: URL, allowExternalKeychain: Bool) -> DiscoveredCredential? {

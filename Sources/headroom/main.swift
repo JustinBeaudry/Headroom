@@ -255,6 +255,21 @@ struct HeadroomCLI {
             }
             print("Cleared Keychain credentials for \(provider.displayName) (\(account)).")
 
+        case "import-claude":
+            let account = optionValue(in: args, flag: "--account") ?? "personal"
+            let discovery = CredentialDiscovery(secretStore: store)
+            guard let token = discovery.importClaudeCodeKeychainToken() else {
+                fputs("Could not read 'Claude Code-credentials' from macOS Keychain.\n", stderr)
+                exit(1)
+            }
+            do {
+                try store.setSecret(token, provider: .claude, accountLabel: account, kind: .oauthToken)
+                print("Imported Claude Code OAuth token into Headroom Keychain for claude (\(account)).")
+            } catch {
+                fputs("Failed to save token: \(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+
         default:
             fputs("Unknown auth subcommand: \(sub)\n", stderr)
             exit(1)

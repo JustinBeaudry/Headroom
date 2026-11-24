@@ -44,21 +44,72 @@ public final class HeadroomViewModel {
     public var selectedSettingsAccountLabel: String = "personal"
     public var credentialSummaryByAccount: [String: String] = [:]
 
+    // In-app release update state
+    public var availableUpdate: ReleaseInfo? = nil
+    public var latestKnownRelease: ReleaseInfo? = nil
+    public var isUpdateBannerDismissed: Bool = false
+    public var isCheckingForUpdates: Bool = false
+    public var updateStatusMessage: String? = nil
+    public var updateProgress: AppUpdateProgress = .idle
+    public var lastUpdateCheckAt: Date? = nil
+    public var autoCheckUpdates: Bool = true {
+        didSet {
+            UserDefaults.standard.set(autoCheckUpdates, forKey: Self.autoCheckUpdatesKey)
+        }
+    }
+    public var skippedUpdateTag: String? = nil {
+        didSet {
+            UserDefaults.standard.set(skippedUpdateTag, forKey: Self.skippedUpdateTagKey)
+        }
+    }
+
+    private static let autoCheckUpdatesKey = "headroom.autoCheckUpdates"
+    private static let skippedUpdateTagKey = "headroom.skippedUpdateTag"
+    private static let notifiedUpdateTagKey = "headroom.notifiedUpdateTag"
+
     private let engine: HeadroomEngine
     private let keychain: KeychainStore
     private let discovery: CredentialDiscovery
     private let notifications: NotificationManager
+    private let updateChecker: UpdateChecker
+    private let appUpdater: AppUpdater
     private var pollingTask: Task<Void, Never>?
+    private var updateTask: Task<Void, Never>?
 
     public init(
         engine: HeadroomEngine = HeadroomEngine(),
         keychain: KeychainStore = KeychainStore(),
-        notifications: NotificationManager = NotificationManager()
+        notifications: NotificationManager = NotificationManager(),
+        updateChecker: UpdateChecker = UpdateChecker(),
+        appUpdater: AppUpdater = AppUpdater()
     ) {
         self.engine = engine
         self.keychain = keychain
         self.discovery = CredentialDiscovery(secretStore: keychain)
         self.notifications = notifications
+        self.updateChecker = updateChecker
+        self.appUpdater = appUpdater
+        if UserDefaults.standard.object(forKey: Self.autoCheckUpdatesKey) != nil {
+            self.autoCheckUpdates = UserDefaults.standard.bool(forKey: Self.autoCheckUpdatesKey)
+        }
+        self.skippedUpdateTag = UserDefaults.standard.string(forKey: Self.skippedUpdateTagKey)
+    }
+
+    public var currentAppVersion: AppVersion {
+        AppVersion.currentBundleVersion()
+    }
+
+    public var isRunningFromAppBundle: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
+    }
+
+    public var visibleBannerUpdate: ReleaseInfo? {
+        guard let release = availableUpdate,
+              !isUpdateBannerDismissed,
+              release.tagName != skippedUpdateTag else {
+            return nil
+        }
+        return release
     }
 
     public func start() {
@@ -84,6 +135,90 @@ public final class HeadroomViewModel {
                     await self.refresh(force: false)
                 }
             }
+        }
+
+        if updateTask == nil {
+            updateTask = Task { [weak self] in
+                guard let self else { return }
+                // Wait a few seconds after startup so quota polling completes first
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                while !Task.isCancelled {
+                    if self.autoCheckUpdates {
+                        await self.checkForUpdates(manual: false)
+                    }
+                    // Check again every 6 hours
+                    try? await Task.sleep(nanoseconds: 6 * 3600 * 1_000_000_000)
+                }
+            }
+        }
+    }
+
+    public func checkForUpdates(manual: Bool) async {
+        guard !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
+        defer {
+            isCheckingForUpdates = false
+            lastUpdateCheckAt = Date()
+        }
+
+        let result = await updateChecker.checkForUpdates(currentVersion: currentAppVersion)
+        switch result {
+        case .updateAvailable(_, let release):
+            latestKnownRelease = release
+            availableUpdate = release
+            if manual {
+                isUpdateBannerDismissed = false
+                if skippedUpdateTag == release.tagName {
+                    skippedUpdateTag = nil
+                }
+            }
+            updateStatusMessage = "Headroom \(release.tagName) is available."
+
+            let lastNotified = UserDefaults.standard.string(forKey: Self.notifiedUpdateTagKey)
+            if lastNotified != release.tagName && skippedUpdateTag != release.tagName {
+                notifications.notifyUpdateAvailable(release)
+                UserDefaults.standard.set(release.tagName, forKey: Self.notifiedUpdateTagKey)
+            }
+
+        case .upToDate(let current, let latest):
+            latestKnownRelease = latest
+            availableUpdate = nil
+            updateStatusMessage = "Headroom \(current.tagString) is up to date."
+
+        case .failed(let message):
+            if manual {
+                updateStatusMessage = message
+            }
+        }
+    }
+
+    public func dismissUpdateBanner() {
+        isUpdateBannerDismissed = true
+    }
+
+    public func skipUpdate(_ release: ReleaseInfo) {
+        skippedUpdateTag = release.tagName
+        isUpdateBannerDismissed = true
+    }
+
+    public func installAvailableUpdate() async {
+        guard let release = availableUpdate ?? latestKnownRelease else { return }
+        guard isRunningFromAppBundle else {
+            NSWorkspace.shared.open(release.htmlURL)
+            return
+        }
+        updateProgress = .downloading
+        do {
+            try await appUpdater.downloadVerifyAndInstall(release: release) { [weak self] stage in
+                Task { @MainActor in
+                    self?.updateProgress = stage
+                }
+            }
+            // Terminate so the handoff installer script atomically swaps Headroom.app and relaunches
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            NSApplication.shared.terminate(nil)
+        } catch {
+            updateProgress = .failed(error.localizedDescription)
         }
     }
 

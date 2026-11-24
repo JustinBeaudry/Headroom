@@ -4,6 +4,7 @@ import HeadroomCore
 
 public struct PopoverView: View {
     @Environment(\.openSettings) private var openSettingsScene
+    @Environment(\.openWindow) private var openWindow
     @Bindable var viewModel: HeadroomViewModel
 
     public init(viewModel: HeadroomViewModel) {
@@ -18,10 +19,20 @@ public struct PopoverView: View {
         openSettingsScene()
     }
 
+    private func openUpdateWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "update-window")
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             header
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let update = viewModel.visibleBannerUpdate {
+                updateBanner(for: update)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if viewModel.hasMultipleAccounts {
                 accountFilterBar
@@ -162,6 +173,42 @@ public struct PopoverView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private func updateBanner(for release: ReleaseInfo) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(HeadroomTheme.sharedPool)
+
+            Text("\(release.tagName) available")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 4)
+
+            Button("What's New") {
+                openUpdateWindow()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(HeadroomTheme.sharedPool)
+            .controlSize(.mini)
+
+            Button {
+                withAnimation(.easeOut(duration: 0.14)) {
+                    viewModel.dismissUpdateBanner()
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss until next check")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(HeadroomTheme.sharedPool.opacity(0.11))
     }
 
     private var accountFilterBar: some View {

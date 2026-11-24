@@ -28,6 +28,8 @@ struct HeadroomCLI {
             await runDaemon(args: rest)
         case "doctor":
             await runDoctor()
+        case "update":
+            await runUpdate()
         case "-h", "--help", "help":
             printUsage()
         case "-v", "--version", "version":
@@ -380,6 +382,23 @@ struct HeadroomCLI {
         for (name, rel) in probes {
             let exists = fm.fileExists(atPath: home.appendingPathComponent(rel).path)
             print("  \(exists ? "✓" : "·") \(name) (~/\(rel))")
+        }
+    }
+
+    static func runUpdate() async {
+        let checker = UpdateChecker()
+        let current = AppVersion.currentBundleVersion()
+        let result = await checker.checkForUpdates(currentVersion: current)
+        switch result {
+        case .updateAvailable(let cur, let release):
+            print("Update available: \(cur.tagString) -> \(release.tagName)")
+            print("Release: \(release.htmlURL.absoluteString)\n")
+            print(release.releaseNotes)
+        case .upToDate(let cur, let latest):
+            print("Headroom \(cur.tagString) is up to date (latest: \(latest.tagName)).")
+        case .failed(let msg):
+            fputs("\(msg)\n", stderr)
+            exit(1)
         }
     }
 

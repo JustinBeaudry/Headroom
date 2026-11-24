@@ -2,6 +2,7 @@ import SwiftUI
 import HeadroomCore
 
 public struct SettingsView: View {
+    @Environment(\.openWindow) private var openWindow
     @Bindable var viewModel: HeadroomViewModel
 
     @State private var selectedKind: CredentialKind = .sessionCookie
@@ -26,6 +27,9 @@ public struct SettingsView: View {
 
             alertsTab
                 .tabItem { Label("Alerts", systemImage: "bell.badge") }
+
+            updatesTab
+                .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
         .frame(width: 560, height: 500)
         .onAppear {
@@ -277,6 +281,65 @@ public struct SettingsView: View {
                     viewModel.saveConfigAsync()
                 }
                 .buttonStyle(.borderedProminent)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var updatesTab: some View {
+        Form {
+            Section("Software Updates") {
+                HStack {
+                    Text("Installed Version")
+                    Spacer()
+                    Text(viewModel.currentAppVersion.tagString)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+
+                Toggle("Check for new GitHub releases automatically", isOn: $viewModel.autoCheckUpdates)
+
+                if let lastChecked = viewModel.lastUpdateCheckAt {
+                    HStack {
+                        Text("Last Checked")
+                        Spacer()
+                        Text(lastChecked, style: .relative)
+                            .foregroundStyle(.secondary)
+                        Text("ago")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await viewModel.checkForUpdates(manual: true) }
+                    } label: {
+                        if viewModel.isCheckingForUpdates {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Checking...")
+                            }
+                        } else {
+                            Text("Check for Updates")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.isCheckingForUpdates)
+
+                    if viewModel.availableUpdate != nil || viewModel.latestKnownRelease != nil {
+                        Button(viewModel.availableUpdate != nil ? "View What's New" : "Latest Release Notes") {
+                            NSApp.activate(ignoringOtherApps: true)
+                            openWindow(id: "update-window")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+
+                if let status = viewModel.updateStatusMessage {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)

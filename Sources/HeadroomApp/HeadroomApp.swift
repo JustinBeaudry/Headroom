@@ -30,5 +30,10 @@ struct HeadroomMenuBarApp: App {
         Settings {
             SettingsView(viewModel: viewModel)
         }
+
+        Window("Headroom Update", id: "update-window") {
+            UpdateWindowView(viewModel: viewModel)
+        }
+        .windowResizability(.contentSize)
     }
 }

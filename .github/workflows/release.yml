@@ -126,6 +126,28 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+
+          {
+            echo "## What's New in Headroom ${TAG}"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              COMMITS="$(git log --no-merges --pretty=format:'- %s' "${PREV_TAG}..HEAD")"
+            else
+              COMMITS="$(git log --no-merges --pretty=format:'- %s' -n 10)"
+            fi
+            if [ -n "$COMMITS" ]; then
+              echo "$COMMITS"
+            else
+              echo "- Maintenance release and stability improvements."
+            fi
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}"
+            fi
+          } > "$NOTES_FILE"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Headroom ${TAG}"
@@ -145,5 +167,5 @@ jobs:
           gh release create "$TAG" \
             "${ASSETS[@]}" \
             --title "Headroom ${TAG}" \
-            --generate-notes \
+            --notes-file "$NOTES_FILE" \
             --latest

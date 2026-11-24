@@ -51,4 +51,20 @@ public final class NotificationManager: NSObject, UNUserNotificationCenterDelega
             center.add(request)
         }
     }
+
+    public func notifyUpdateAvailable(_ release: ReleaseInfo) {
+        guard isBundledApp else { return }
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = "Headroom \(release.tagName) is available"
+        content.body = release.summaryHighlight
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "headroom-update-\(release.tagName)",
+            content: content,
+            trigger: nil
+        )
+        center.add(request)
+    }
 }

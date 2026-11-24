@@ -11,9 +11,10 @@ public struct MenuBarLabelView: View {
     public var body: some View {
         if viewModel.privacyMode {
             HStack(spacing: 4) {
-                Image(systemName: "eye.slash.fill")
+                Image(systemName: "eye.slash")
+                    .font(.system(size: 11.5, weight: .medium))
                 Text("HR")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
             }
         } else {
             switch viewModel.config.menuBarDisplayMode {
@@ -29,21 +30,24 @@ public struct MenuBarLabelView: View {
     private var mostUrgentLabel: some View {
         if let urgent = viewModel.mostUrgentItem {
             HStack(spacing: 4) {
-                Image(systemName: urgent.isAuthExpired ? "exclamationmark.triangle.fill" : iconName(for: urgent.pace))
+                Image(systemName: urgent.isAuthExpired ? "exclamationmark.triangle.fill" : gaugeIcon(for: urgent))
+                    .font(.system(size: 11.5, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                 if urgent.isAuthExpired {
-                    Text("\(urgent.shortCode) !")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    Text("\(urgent.shortCode) Auth")
+                        .font(.system(size: 11.5, weight: .semibold))
                 } else {
                     Text("\(urgent.shortCode) \(Int(urgent.headroomPercent.rounded()))%")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .monospacedDigit()
                 }
             }
         } else {
             HStack(spacing: 4) {
                 Image(systemName: "gauge.with.dots.needle.67percent")
-                Text("HR")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 12, weight: .medium))
+                Text("Headroom")
+                    .font(.system(size: 11.5, weight: .medium))
             }
         }
     }
@@ -53,9 +57,10 @@ public struct MenuBarLabelView: View {
         let entries = viewModel.miniBarEntries
         if entries.isEmpty {
             Image(systemName: "gauge.with.dots.needle.67percent")
+                .font(.system(size: 12, weight: .medium))
         } else {
-            HStack(spacing: 2) {
-                ForEach(entries, id: \.id) { entry in
+            HStack(alignment: .bottom, spacing: 2.5) {
+                ForEach(entries) { entry in
                     MiniBarColumn(headroomPercent: entry.headroomPercent, isError: entry.isError)
                 }
             }
@@ -63,11 +68,14 @@ public struct MenuBarLabelView: View {
         }
     }
 
-    private func iconName(for pace: PaceStatus) -> String {
-        switch pace {
+    private func gaugeIcon(for item: UrgentMenuItem) -> String {
+        if item.headroomPercent <= 10.0 {
+            return "gauge.with.dots.needle.100percent"
+        }
+        switch item.pace {
         case .reserve: return "gauge.with.dots.needle.33percent"
         case .onTrack: return "gauge.with.dots.needle.50percent"
-        case .burningFast: return "flame.fill"
+        case .burningFast: return "gauge.with.dots.needle.84percent"
         }
     }
 }
@@ -77,16 +85,20 @@ private struct MiniBarColumn: View {
     let isError: Bool
 
     var body: some View {
-        GeometryReader { geo in
-            let clamped = min(max(headroomPercent / 100.0, 0.08), 1.0)
+        let fraction = min(max(headroomPercent / 100.0, 0.12), 1.0)
+        VStack(spacing: 1) {
+            // Subtle headroom ceiling cap tick
+            Rectangle()
+                .fill(Color.primary.opacity(0.45))
+                .frame(width: 4, height: 1)
             ZStack(alignment: .bottom) {
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.primary.opacity(0.22))
+                    .fill(Color.primary.opacity(0.2))
                 RoundedRectangle(cornerRadius: 1)
                     .fill(isError ? Color.red : Color.primary)
-                    .frame(height: geo.size.height * clamped)
+                    .frame(height: 11 * fraction)
             }
+            .frame(width: 4, height: 11)
         }
-        .frame(width: 4, height: 13)
     }
 }

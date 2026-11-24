@@ -84,6 +84,27 @@ final class AdapterTests: XCTestCase {
         XCTAssertEqual(snap.status, .authExpired)
     }
 
+    func testClaudeLocalFallbackReportsTelemetryWithoutFakeZeroPercentCap() async throws {
+        var logs = StubLogParser()
+        logs.claude = LocalUsageSummary(
+            provider: .claude,
+            requestCount: 42,
+            inputTokens: 120_000,
+            outputTokens: 35_000,
+            cacheReadTokens: 4_000_000,
+            estimatedCostUSD: 2.45,
+            earliestEvent: fixedNow.addingTimeInterval(-3600),
+            latestEvent: fixedNow
+        )
+        let ctx = try makeContext(logParser: logs) { _ in
+            HTTPResponse(statusCode: 500, body: Data())
+        }
+        let snap = await ClaudeAdapter().fetchUsage(account: AccountConfig(provider: .claude), context: ctx)
+        XCTAssertEqual(snap.status, .stale)
+        XCTAssertTrue(snap.windows.isEmpty, "Local fallback must not fabricate a fake 0% headroom cap")
+        XCTAssertEqual(snap.estimatedLocalCostUSD ?? 0, 2.45, accuracy: 0.01)
+    }
+
     func testCodexOAuthParsesSubscriptionWindows() async throws {
         let ctx = try makeContext(
             secrets: [(.codex, "personal", .oauthToken, "oauth-tok")]

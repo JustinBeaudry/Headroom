@@ -45,31 +45,19 @@ public struct ClaudeAdapter: ProviderAdapter {
             }
         }
 
-        // 3. Fallback: local Claude Code JSONL session logs
+        // 3. Fallback: local Claude Code JSONL session logs (telemetry only, no fabricated hard cap)
         if localSummary.requestCount > 0 {
-            let windowStart = localSummary.earliestEvent ?? now.addingTimeInterval(-3600)
-            let estimatedReset = windowStart.addingTimeInterval(18000)
-            // Weight non-cached tokens + 10% of cache-read tokens for a realistic 5h local activity gauge
-            let weightedTokens = Double(localSummary.inputTokens + localSummary.outputTokens) + Double(localSummary.cacheReadTokens) * 0.1
-            let tokenWindow = QuotaWindow(
-                id: "session_5h_local",
-                label: "5h Local CLI Tokens",
-                unit: .tokens,
-                used: weightedTokens,
-                limit: max(5_000_000, weightedTokens),
-                resetsAt: estimatedReset > now ? estimatedReset : now.addingTimeInterval(3600),
-                windowDurationSec: 18000,
-                now: now
-            )
+            let formattedTok = QuotaWindow.formatCompactNumber(Double(localSummary.inputTokens + localSummary.outputTokens))
+            let cacheTok = QuotaWindow.formatCompactNumber(Double(localSummary.cacheReadTokens))
             return ProviderSnapshot(
                 provider: .claude,
                 accountLabel: account.label,
                 status: .stale,
-                windows: [tokenWindow],
+                windows: [],
                 fetchedAt: now,
                 source: "local_jsonl_fallback",
                 billingModel: .subscription,
-                message: "Showing local Claude Code JSONL estimate only (web chat usage requires claude.ai session cookie).",
+                message: "Local CLI activity (5h): \(localSummary.requestCount) req, \(formattedTok) tok + \(cacheTok) cached. Add claude.ai cookie for live 5h/weekly quota.",
                 estimatedLocalCostUSD: localCost
             )
         }

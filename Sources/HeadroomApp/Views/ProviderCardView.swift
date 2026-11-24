@@ -4,89 +4,270 @@ import HeadroomCore
 public struct ProviderCardView: View {
     let snapshot: ProviderSnapshot
     let privacyMode: Bool
+    let showAccountLabel: Bool
     let onReauth: () -> Void
+    let onConfigure: () -> Void
     let onRefresh: () -> Void
+
+    @State private var isExpanded = false
+    @State private var isHovered = false
 
     public init(
         snapshot: ProviderSnapshot,
         privacyMode: Bool,
+        showAccountLabel: Bool = false,
         onReauth: @escaping () -> Void,
+        onConfigure: @escaping () -> Void,
         onRefresh: @escaping () -> Void
     ) {
         self.snapshot = snapshot
         self.privacyMode = privacyMode
+        self.showAccountLabel = showAccountLabel
         self.onReauth = onReauth
+        self.onConfigure = onConfigure
         self.onRefresh = onRefresh
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
-                Text(snapshot.provider.displayName)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(privacyMode ? "••••" : snapshot.accountLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.12), in: Capsule())
+        VStack(alignment: .leading, spacing: 10) {
+            // Header row: Provider identity + right-aligned hero headroom or status badge
+            HStack(spacing: 8) {
+                ProviderBadgeIcon(provider: snapshot.provider, tint: accentColor)
 
-                Spacer()
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 5) {
+                        Text(snapshot.provider.displayName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.primary)
 
-                if let cost = snapshot.estimatedLocalCostUSD, !privacyMode {
-                    Text(String(format: "~$%.2f", cost))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        if showAccountLabel {
+                            Text(privacyMode ? "••••" : snapshot.accountLabel)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.primary.opacity(0.06), in: Capsule())
+                        }
+                    }
+
+                    if let subtitle = cardSubtitle {
+                        Text(subtitle)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
 
-                StatusPill(status: snapshot.status)
+                Spacer(minLength: 8)
+
+                headerTrailingView
             }
 
+            // Content body: Windows, auth recovery, or local telemetry fallback
             if snapshot.status == .authExpired {
                 HStack(spacing: 8) {
-                    Text(snapshot.message ?? "Session cookie or token expired.")
-                        .font(.caption)
+                    Text(snapshot.message ?? "Session expired. Re-authenticate to resume live tracking.")
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                    Spacer()
-                    Button("Re-auth") {
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Button("Sign In") {
                         onReauth()
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
-                    Button {
-                        onRefresh()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
+                    .controlSize(.small)
                 }
             } else if snapshot.windows.isEmpty {
-                Text(snapshot.message ?? "Not configured yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                localTelemetryOrNoticeView
             } else {
-                ForEach(snapshot.windows) { window in
-                    QuotaWindowRow(window: window, privacyMode: privacyMode)
+                VStack(spacing: 10) {
+                    ForEach(snapshot.windows) { window in
+                        QuotaWindowRow(
+                            window: window,
+                            privacyMode: privacyMode,
+                            showHeaderHero: snapshot.windows.count > 1
+                        )
+                    }
                 }
             }
+
+            // Expandable detail drawer (source, burn multiplier, local cost, quick actions)
+            if isExpanded {
+                Divider()
+                    .opacity(0.35)
+                expandedDetailsView
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .padding(10)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+        .padding(11)
+        .background(
+            RoundedRectangle(cornerRadius: HeadroomTheme.cardCornerRadius, style: .continuous)
+                .fill(Color.primary.opacity(isHovered ? 0.065 : 0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: HeadroomTheme.cardCornerRadius, style: .continuous)
+                .strokeBorder(
+                    snapshot.status == .authExpired
+                        ? HeadroomTheme.burningFast.opacity(0.35)
+                        : Color.primary.opacity(isHovered ? 0.13 : 0.075),
+                    lineWidth: 0.85
+                )
+        )
+        .contentShape(RoundedRectangle(cornerRadius: HeadroomTheme.cardCornerRadius, style: .continuous))
+        .onTapGesture {
+            withAnimation(.easeOut(duration: 0.16)) {
+                isExpanded.toggle()
+            }
+        }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovered = hovering
+            }
+        }
     }
 
-    private var statusColor: Color {
+    @ViewBuilder
+    private var headerTrailingView: some View {
+        if snapshot.status == .authExpired {
+            StatusBadge(text: "Auth Expired", color: HeadroomTheme.burningFast)
+        } else if snapshot.status == .incident {
+            StatusBadge(text: "Offline", color: HeadroomTheme.burningFast)
+        } else if snapshot.windows.count == 1, let single = snapshot.windows.first {
+            // Single-window provider: surface the hero headroom % directly in the card header!
+            if privacyMode {
+                Text("••% left")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("\(Int(single.headroomPercent.rounded()))% left")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(HeadroomTheme.statusColor(for: single.paceStatus, headroom: single.headroomPercent))
+            }
+        } else if snapshot.status == .stale && snapshot.windows.isEmpty {
+            StatusBadge(text: "Local Only", color: HeadroomTheme.stale)
+        } else if let primary = snapshot.primaryWindow {
+            if privacyMode {
+                Text("••% left")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("\(Int(primary.headroomPercent.rounded()))% min")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(HeadroomTheme.statusColor(for: primary.paceStatus, headroom: primary.headroomPercent))
+            }
+        }
+    }
+
+    private var cardSubtitle: String? {
+        if let billing = snapshot.billingModel {
+            switch billing {
+            case .xSubscriptionUnified: return "Unified X Subscription"
+            case .payAsYouGo: return "Pay-as-you-go API"
+            case .hybrid: return "Subscription + API Credits"
+            case .legacyMonthly: return "Monthly Plan"
+            case .subscription:
+                if snapshot.status == .stale && snapshot.windows.isEmpty {
+                    return "CLI logs detected (no live quota cookie)"
+                }
+                return nil
+            }
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private var localTelemetryOrNoticeView: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let msg = snapshot.message {
+                Text(privacyMode ? "Local telemetry hidden in privacy mode." : msg)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                if let cost = snapshot.estimatedLocalCostUSD, !privacyMode {
+                    Text(String(format: "5h local est: $%.2f", cost))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Add Cookie") {
+                    onConfigure()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
+    }
+
+    private var expandedDetailsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                if let source = snapshot.source {
+                    Label(source, systemImage: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if let cost = snapshot.estimatedLocalCostUSD, !privacyMode {
+                    Text(String(format: "5h CLI est. $%.2f", cost))
+                        .font(.system(size: 10, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let primary = snapshot.primaryWindow,
+               let mult = primary.paceDetail?.burnRateMultiplier,
+               !privacyMode {
+                let elapsedPct = Int((primary.paceDetail?.elapsedPercent ?? 0).rounded())
+                Text(String(format: "Burn rate: %.2fx linear pace (%d%% of window elapsed)", mult, elapsedPct))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                Button("Open Dashboard") {
+                    onReauth()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+
+                Button("Configure") {
+                    onConfigure()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+
+                Spacer()
+
+                Button {
+                    onRefresh()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private var accentColor: Color {
         switch snapshot.status {
         case .ok:
-            guard let primary = snapshot.primaryWindow else { return .green }
-            return paceColor(primary.paceStatus, headroom: primary.headroomPercent)
-        case .stale: return .orange
-        case .authExpired, .incident: return .red
-        case .unconfigured: return .gray
+            guard let primary = snapshot.primaryWindow else { return HeadroomTheme.reserve }
+            return HeadroomTheme.statusColor(for: primary.paceStatus, headroom: primary.headroomPercent)
+        case .stale: return HeadroomTheme.stale
+        case .authExpired, .incident: return HeadroomTheme.burningFast
+        case .unconfigured: return .secondary
         }
     }
 }
@@ -95,167 +276,274 @@ public struct SharedPoolCardView: View {
     let pool: SharedPoolGroup
     let privacyMode: Bool
 
+    @State private var isHovered = false
+
     public init(pool: SharedPoolGroup, privacyMode: Bool) {
         self.pool = pool
         self.privacyMode = privacyMode
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "link.circle.fill")
-                    .foregroundStyle(.blue)
-                    .font(.system(size: 13))
-                Text(pool.label)
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-                HStack(spacing: 4) {
-                    ForEach(pool.memberProviders) { provider in
-                        Text(provider.displayName)
-                            .font(.system(size: 10, weight: .medium))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.14), in: Capsule())
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(HeadroomTheme.sharedPool.opacity(0.16))
+                    Image(systemName: "link")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(HeadroomTheme.sharedPool)
+                }
+                .frame(width: 22, height: 22)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(pool.label)
+                        .font(.system(size: 13, weight: .semibold))
+                    HStack(spacing: 4) {
+                        ForEach(pool.memberProviders) { provider in
+                            Text(provider.displayName)
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundStyle(HeadroomTheme.sharedPool)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(HeadroomTheme.sharedPool.opacity(0.14), in: Capsule())
+                        }
                     }
+                }
+
+                Spacer()
+
+                if privacyMode {
+                    Text("••% left")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("\(Int(pool.canonicalWindow.headroomPercent.rounded()))% left")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(
+                            HeadroomTheme.statusColor(
+                                for: pool.canonicalWindow.paceStatus,
+                                headroom: pool.canonicalWindow.headroomPercent
+                            )
+                        )
                 }
             }
 
-            QuotaWindowRow(window: pool.canonicalWindow, privacyMode: privacyMode)
+            QuotaWindowRow(
+                window: pool.canonicalWindow,
+                privacyMode: privacyMode,
+                showHeaderHero: false
+            )
 
             if !pool.supplementaryWindows.isEmpty {
                 Divider()
-                    .opacity(0.4)
-                ForEach(pool.supplementaryWindows) { sup in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("\(sup.provider.displayName) • \(sup.window.label)")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        QuotaWindowRow(window: sup.window, privacyMode: privacyMode, hideTitle: true)
+                    .opacity(0.35)
+                VStack(spacing: 8) {
+                    ForEach(pool.supplementaryWindows) { sup in
+                        QuotaWindowRow(
+                            window: sup.window,
+                            privacyMode: privacyMode,
+                            customLabel: "\(sup.provider.displayName): \(sup.window.label)",
+                            showHeaderHero: true
+                        )
                     }
                 }
             }
         }
-        .padding(10)
-        .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.blue.opacity(0.2), lineWidth: 1)
+        .padding(11)
+        .background(
+            RoundedRectangle(cornerRadius: HeadroomTheme.cardCornerRadius, style: .continuous)
+                .fill(HeadroomTheme.sharedPool.opacity(isHovered ? 0.085 : 0.06))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: HeadroomTheme.cardCornerRadius, style: .continuous)
+                .strokeBorder(HeadroomTheme.sharedPool.opacity(isHovered ? 0.32 : 0.22), lineWidth: 0.9)
+        )
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovered = hovering
+            }
+        }
     }
 }
 
 public struct QuotaWindowRow: View {
     let window: QuotaWindow
     let privacyMode: Bool
-    var hideTitle: Bool = false
+    var customLabel: String? = nil
+    var showHeaderHero: Bool = true
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                if !hideTitle {
-                    Text(window.label)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.primary)
-                }
-                Spacer()
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(customLabel ?? window.label)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 6)
+
                 if privacyMode {
-                    Text("••% left")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    Text("Hidden")
+                        .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("\(Int(window.headroomPercent.rounded()))% left")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(paceColor(window.paceStatus, headroom: window.headroomPercent))
-                    Text("(\(window.formattedUsage))")
-                        .font(.system(size: 10, design: .monospaced))
+                    Text(usageSummaryText)
+                        .font(.system(size: 10.5))
+                        .monospacedDigit()
                         .foregroundStyle(.secondary)
+
+                    if showHeaderHero {
+                        Text("\(Int(window.headroomPercent.rounded()))% left")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(meterColor)
+                    }
                 }
             }
 
-            // Dual-track bar: fill shows % used, vertical tick shows % of reset window elapsed
+            // Dual-track meter: usage bar rising toward ceiling + vertical elapsed-time pace tick
             GeometryReader { geo in
-                let usedFrac = privacyMode ? 0.45 : min(max(window.usedPercent / 100.0, 0), 1)
+                let usedFrac = privacyMode ? 0.42 : min(max(window.usedPercent / 100.0, 0), 1)
                 let elapsedFrac = min(max((window.paceDetail?.elapsedPercent ?? 0) / 100.0, 0), 1)
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.primary.opacity(0.1))
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(privacyMode ? Color.secondary.opacity(0.4) : paceColor(window.paceStatus, headroom: window.headroomPercent))
-                        .frame(width: geo.size.width * usedFrac)
-                    if !privacyMode && elapsedFrac > 0.02 && elapsedFrac < 0.99 {
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.75))
-                            .frame(width: 1.5, height: 10)
-                            .offset(x: geo.size.width * elapsedFrac - 0.75)
+                    RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                        .fill(Color.primary.opacity(0.09))
+
+                    if usedFrac > 0.005 {
+                        RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                            .fill(privacyMode ? Color.secondary.opacity(0.35) : meterColor)
+                            .frame(width: max(6, geo.size.width * usedFrac))
+                    }
+
+                    // Elapsed-time pace marker tick (shows where linear burn would be right now)
+                    if !privacyMode && elapsedFrac > 0.03 && elapsedFrac < 0.98 {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color.primary.opacity(0.85))
+                            .frame(width: 2, height: 11)
+                            .shadow(color: Color.black.opacity(0.35), radius: 1, x: 0, y: 0)
+                            .offset(x: geo.size.width * elapsedFrac - 1)
                     }
                 }
             }
-            .frame(height: 6)
+            .frame(height: 7)
 
-            HStack {
+            HStack(spacing: 5) {
                 if !privacyMode {
-                    Text(window.paceStatus.displayLabel)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(paceColor(window.paceStatus, headroom: window.headroomPercent))
+                    Circle()
+                        .fill(meterColor)
+                        .frame(width: 5.5, height: 5.5)
+                    Text(paceCaption)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(meterColor)
+
                     if window.usedPercent >= 100.0 {
-                        Text("• exhausted")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.red)
+                        Text("· Exhausted")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(HeadroomTheme.burningFast)
                     } else if let detail = window.paceDetail,
-                       detail.willExhaustBeforeReset,
-                       let eta = detail.projectedExhaustionAt {
-                        Text("• out in ~\(PaceCalculator.formatCountdown(until: eta))")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.red)
+                              detail.willExhaustBeforeReset,
+                              let eta = detail.projectedExhaustionAt {
+                        Text("· Out in ~\(PaceCalculator.formatCountdown(until: eta))")
+                            .font(.system(size: 10.5))
+                            .monospacedDigit()
+                            .foregroundStyle(HeadroomTheme.burningFast)
                     }
                 } else {
-                    Text("Hidden")
-                        .font(.system(size: 10))
+                    Text("Values hidden")
+                        .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Text("Resets \(PaceCalculator.formatCountdown(until: window.resetsAt))")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 6)
+
+                if let resetsAt = window.resetsAt {
+                    Text("Resets in \(PaceCalculator.formatCountdown(until: resetsAt))")
+                        .font(.system(size: 10.5))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var meterColor: Color {
+        HeadroomTheme.statusColor(for: window.paceStatus, headroom: window.headroomPercent)
+    }
+
+    private var usageSummaryText: String {
+        switch window.unit {
+        case .percent:
+            return String(format: "%.0f%% used", window.usedPercent)
+        case .dollars, .requests, .tokens:
+            return window.formattedUsage
+        }
+    }
+
+    private var paceCaption: String {
+        if window.usedPercent >= 100.0 {
+            return "Limit Reached"
+        }
+        return window.paceStatus.displayLabel
+    }
+}
+
+public struct CompactUnconfiguredRow: View {
+    let snapshot: ProviderSnapshot
+    let onConnect: () -> Void
+
+    @State private var isHovered = false
+
+    public init(snapshot: ProviderSnapshot, onConnect: @escaping () -> Void) {
+        self.snapshot = snapshot
+        self.onConnect = onConnect
+    }
+
+    public var body: some View {
+        HStack(spacing: 8) {
+            ProviderBadgeIcon(provider: snapshot.provider, tint: .secondary)
+            Text(snapshot.provider.displayName)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.primary)
+            Text("Not connected")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Connect") {
+                onConnect()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(isHovered ? 0.055 : 0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.75)
+        )
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovered = hovering
             }
         }
     }
 }
 
-private struct StatusPill: View {
-    let status: SnapshotStatus
+private struct StatusBadge: View {
+    let text: String
+    let color: Color
 
     var body: some View {
-        switch status {
-        case .ok:
-            EmptyView()
-        case .stale:
-            pill("STALE", color: .orange)
-        case .authExpired:
-            pill("AUTH EXPIRED", color: .red)
-        case .incident:
-            pill("INCIDENT", color: .red)
-        case .unconfigured:
-            pill("SETUP", color: .secondary)
-        }
-    }
-
-    private func pill(_ title: String, color: Color) -> some View {
-        Text(title)
-            .font(.system(size: 9, weight: .bold))
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
             .background(color.opacity(0.14), in: Capsule())
-    }
-}
-
-func paceColor(_ pace: PaceStatus, headroom: Double) -> Color {
-    if headroom <= 15 || pace == .burningFast {
-        return .red
-    } else if headroom <= 35 || pace == .onTrack {
-        return .orange
-    } else {
-        return .green
     }
 }

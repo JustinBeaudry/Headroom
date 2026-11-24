@@ -200,7 +200,7 @@ struct HeadroomCLI {
             print("Credential Discovery Status (Zero-Password / Session Reuse)")
             print(String(repeating: "─", count: 66))
             for account in config.accounts {
-                let creds = discovery.discover(for: account.provider, accountLabel: account.label)
+                let creds = discovery.discover(for: account)
                 let label = "\(account.provider.displayName) (\(account.label))"
                 if creds.isEmpty {
                     print("  • \(label): none detected")
@@ -280,17 +280,42 @@ struct HeadroomCLI {
 
         case "add-account":
             guard args.count >= 3, let provider = ProviderID(rawValue: args[1].lowercased()) else {
-                fputs("Usage: headroom config add-account <provider> <label>\n", stderr)
+                fputs("Usage: headroom config add-account <provider> <label> [--cli-dir <path>]\n", stderr)
                 exit(1)
             }
             let label = args[2]
+            let cliDir = optionValue(in: args, flag: "--cli-dir")
             var config = await store.load()
             if !config.accounts.contains(where: { $0.provider == provider && $0.label == label }) {
-                config.accounts.append(AccountConfig(provider: provider, label: label, enabled: true))
+                let isFirstForProvider = !config.accounts.contains(where: { $0.provider == provider })
+                config.accounts.append(AccountConfig(
+                    provider: provider,
+                    label: label,
+                    enabled: true,
+                    useLocalCLIDiscovery: isFirstForProvider,
+                    cliConfigDir: cliDir
+                ))
                 try? await store.save(config)
                 print("Added account \(provider.displayName) (\(label)).")
             } else {
                 print("Account \(provider.displayName) (\(label)) already exists.")
+            }
+
+        case "remove-account":
+            guard args.count >= 3, let provider = ProviderID(rawValue: args[1].lowercased()) else {
+                fputs("Usage: headroom config remove-account <provider> <label>\n", stderr)
+                exit(1)
+            }
+            let label = args[2]
+            var config = await store.load()
+            let before = config.accounts.count
+            config.accounts.removeAll { $0.provider == provider && $0.label == label }
+            if config.accounts.count < before {
+                try? await store.save(config)
+                print("Removed account \(provider.displayName) (\(label)).")
+            } else {
+                fputs("No account \(provider.displayName) (\(label)) found.\n", stderr)
+                exit(1)
             }
 
         case "set-gemini-lane":

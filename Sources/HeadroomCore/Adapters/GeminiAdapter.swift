@@ -8,9 +8,14 @@ public struct GeminiAdapter: ProviderAdapter {
     public func fetchUsage(account: AccountConfig, context: AdapterContext) async -> ProviderSnapshot {
         let now = context.now()
         let lane = account.geminiLane ?? .auto
-        let creds = context.credentials.discover(for: .gemini, accountLabel: account.label)
+        let creds = context.credentials.discover(for: account)
         let startOfDay = Calendar(identifier: .gregorian).startOfDay(for: now)
-        let localDaily = context.logParser.parseGeminiLogs(since: startOfDay)
+        let localDaily: LocalUsageSummary
+        if account.resolvedAllowGlobalCLI {
+            localDaily = context.logParser.parseGeminiLogs(since: startOfDay)
+        } else {
+            localDaily = LocalUsageSummary(provider: .gemini, requestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, estimatedCostUSD: 0, earliestEvent: nil, latestEvent: nil)
+        }
         let localCost = localDaily.estimatedCostUSD > 0 ? localDaily.estimatedCostUSD : nil
 
         switch lane {

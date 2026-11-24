@@ -4,9 +4,12 @@ import HeadroomCore
 public struct SettingsView: View {
     @Bindable var viewModel: HeadroomViewModel
 
-    @State private var selectedAccountLabel: String = "personal"
     @State private var selectedKind: CredentialKind = .sessionCookie
     @State private var secretInput: String = ""
+    @State private var cliDirInput: String = ""
+    @State private var newAccountProvider: ProviderID = .claude
+    @State private var newAccountLabel: String = "work"
+    @State private var newAccountCLIDir: String = ""
     @State private var feedbackMessage: String = ""
 
     public init(viewModel: HeadroomViewModel) {
@@ -24,54 +27,144 @@ public struct SettingsView: View {
             alertsTab
                 .tabItem { Label("Alerts", systemImage: "bell.badge") }
         }
-        .frame(width: 520, height: 430)
+        .frame(width: 560, height: 500)
         .onAppear {
             viewModel.refreshCredentialSummaries()
+            syncCLIDirField()
         }
+        .onChange(of: viewModel.selectedSettingsProvider) {
+            syncCLIDirField()
+        }
+        .onChange(of: viewModel.selectedSettingsAccountLabel) {
+            syncCLIDirField()
+        }
+    }
+
+    private func syncCLIDirField() {
+        let match = viewModel.config.accounts.first {
+            $0.provider == viewModel.selectedSettingsProvider && $0.label == viewModel.selectedSettingsAccountLabel
+        }
+        cliDirInput = match?.cliConfigDir ?? ""
     }
 
     private var accountsTab: some View {
         Form {
-            Section("Discovered Connections") {
-                ForEach(ProviderID.allCases) { provider in
-                    let summary = viewModel.credentialSummaryByProvider[provider] ?? "Not connected"
+            Section("Configured Accounts (Work & Personal)") {
+                ForEach(viewModel.config.accounts) { account in
+                    let summary = viewModel.credentialSummaryByAccount[account.id] ?? "Not connected"
                     let connected = summary != "Not connected"
+                    let isSelected = viewModel.selectedSettingsProvider == account.provider
+                        && viewModel.selectedSettingsAccountLabel == account.label
+
                     HStack(spacing: 8) {
-                        ProviderBadgeIcon(provider: provider, tint: connected ? HeadroomTheme.reserve : .secondary)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(provider.displayName)
-                                .font(.system(size: 12.5, weight: .medium))
+                        ProviderBadgeIcon(provider: account.provider, tint: connected ? HeadroomTheme.reserve : .secondary)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 5) {
+                                Text(account.provider.displayName)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                AccountLabelPill(label: account.label)
+                                if !account.enabled {
+                                    Text("Paused")
+                                        .font(.system(size: 9.5))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                             Text(summary)
                                 .font(.system(size: 10.5))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
+
                         Spacer()
-                        Button(connected ? "Manage" : "Connect") {
-                            viewModel.selectedSettingsProvider = provider
+
+                        Button(isSelected ? "Editing" : (connected ? "Manage" : "Connect")) {
+                            viewModel.selectForSettings(provider: account.provider, accountLabel: account.label)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
+                        .disabled(isSelected)
+
+                        if viewModel.config.accounts.filter({ $0.provider == account.provider }).count > 1 {
+                            Button(role: .destructive) {
+                                viewModel.removeAccount(account)
+                                feedbackMessage = "Removed \(account.provider.displayName) (\(account.label))."
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove this account")
+                        }
                     }
                 }
             }
 
-            Section("Store Keychain Credential (Zero Passwords)") {
+            Section("Add Another Account (e.g. Work vs. Personal)") {
+                HStack(spacing: 8) {
+                    Picker("Provider", selection: $newAccountProvider) {
+                        ForEach(ProviderID.allCases) { p in
+                            Text(p.displayName).tag(p)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+
+                    TextField("Label (e.g. work, personal)", text: $newAccountLabel)
+                        .textFieldStyle(.roundedBorder)
+
+                    Button("Add Account") {
+                        feedbackMessage = viewModel.addAccount(
+                            provider: newAccountProvider,
+                            label: newAccountLabel,
+                            cliConfigDir: newAccountCLIDir
+                        )
+                        newAccountCLIDir = ""
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(newAccountLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                TextField("Optional CLI profile folder (e.g. ~/.claude-work or ~/.codex-work)", text: $newAccountCLIDir)
+                    .font(.caption)
+            }
+
+            Section("Credentials for \(viewModel.selectedSettingsProvider.displayName) (\(viewModel.selectedSettingsAccountLabel))") {
                 Picker("Provider", selection: $viewModel.selectedSettingsProvider) {
                     ForEach(ProviderID.allCases) { p in
                         Text(p.displayName).tag(p)
                     }
                 }
-                TextField("Account Label", text: $selectedAccountLabel, prompt: Text("personal"))
+
+                TextField("Account Label", text: $viewModel.selectedSettingsAccountLabel, prompt: Text("personal or work"))
+
                 Picker("Credential Type", selection: $selectedKind) {
                     Text("Browser Session Cookie").tag(CredentialKind.sessionCookie)
                     Text("OAuth Token").tag(CredentialKind.oauthToken)
                     Text("API Key").tag(CredentialKind.apiKey)
                 }
+
                 SecureField("Paste cookie, token, or API key", text: $secretInput)
 
+                if viewModel.selectedSettingsProvider == .claude || viewModel.selectedSettingsProvider == .codex || viewModel.selectedSettingsProvider == .gemini {
+                    HStack {
+                        TextField("Custom CLI folder (optional)", text: $cliDirInput, prompt: Text("~/.claude-work"))
+                        Button("Save Folder") {
+                            viewModel.updateAccountCLIDir(
+                                provider: viewModel.selectedSettingsProvider,
+                                accountLabel: viewModel.selectedSettingsAccountLabel,
+                                cliConfigDir: cliDirInput
+                            )
+                            feedbackMessage = "Updated CLI folder for \(viewModel.selectedSettingsProvider.displayName) (\(viewModel.selectedSettingsAccountLabel))."
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
                 if viewModel.selectedSettingsProvider == .gemini,
-                   let idx = viewModel.config.accounts.firstIndex(where: { $0.provider == .gemini }) {
+                   let idx = viewModel.config.accounts.firstIndex(where: {
+                       $0.provider == .gemini && $0.label == viewModel.selectedSettingsAccountLabel
+                   }) {
                     Picker("Gemini Quota Lane", selection: Binding(
                         get: { viewModel.config.accounts[idx].geminiLane ?? .auto },
                         set: { newLane in
@@ -90,7 +183,7 @@ public struct SettingsView: View {
                         feedbackMessage = viewModel.saveCredential(
                             value: secretInput,
                             provider: viewModel.selectedSettingsProvider,
-                            accountLabel: selectedAccountLabel.isEmpty ? "personal" : selectedAccountLabel,
+                            accountLabel: viewModel.selectedSettingsAccountLabel,
                             kind: selectedKind
                         )
                         secretInput = ""
@@ -107,9 +200,9 @@ public struct SettingsView: View {
                     Button("Clear Auth", role: .destructive) {
                         viewModel.clearCredentials(
                             provider: viewModel.selectedSettingsProvider,
-                            accountLabel: selectedAccountLabel.isEmpty ? "personal" : selectedAccountLabel
+                            accountLabel: viewModel.selectedSettingsAccountLabel
                         )
-                        feedbackMessage = "Cleared Keychain credentials for \(viewModel.selectedSettingsProvider.displayName)."
+                        feedbackMessage = "Cleared Keychain credentials for \(viewModel.selectedSettingsProvider.displayName) (\(viewModel.selectedSettingsAccountLabel))."
                     }
                 }
 

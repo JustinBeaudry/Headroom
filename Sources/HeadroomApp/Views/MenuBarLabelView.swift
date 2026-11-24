@@ -10,12 +10,8 @@ public struct MenuBarLabelView: View {
 
     public var body: some View {
         if viewModel.privacyMode {
-            HStack(spacing: 4) {
-                Image(systemName: "eye.slash")
-                    .font(.system(size: 11.5, weight: .medium))
-                Text("HR")
-                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-            }
+            Label("HR", systemImage: "eye.slash")
+                .labelStyle(.titleAndIcon)
         } else {
             switch viewModel.config.menuBarDisplayMode {
             case .mostUrgent:
@@ -29,26 +25,20 @@ public struct MenuBarLabelView: View {
     @ViewBuilder
     private var mostUrgentLabel: some View {
         if let urgent = viewModel.mostUrgentItem {
-            HStack(spacing: 4) {
-                Image(systemName: urgent.isAuthExpired ? "exclamationmark.triangle.fill" : gaugeIcon(for: urgent))
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                if urgent.isAuthExpired {
-                    Text("\(urgent.shortCode) Auth")
-                        .font(.system(size: 11.5, weight: .semibold))
-                } else {
-                    Text("\(urgent.shortCode) \(Int(urgent.headroomPercent.rounded()))%")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .monospacedDigit()
-                }
+            if urgent.isAuthExpired {
+                Label("\(urgent.menuBarCode) Auth", systemImage: "exclamationmark.triangle.fill")
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Label(
+                    "\(urgent.menuBarCode) \(Int(urgent.headroomPercent.rounded()))%",
+                    systemImage: gaugeIcon(for: urgent)
+                )
+                .labelStyle(.titleAndIcon)
+                .monospacedDigit()
             }
         } else {
-            HStack(spacing: 4) {
-                Image(systemName: "gauge.with.dots.needle.67percent")
-                    .font(.system(size: 12, weight: .medium))
-                Text("Headroom")
-                    .font(.system(size: 11.5, weight: .medium))
-            }
+            Label("Headroom", systemImage: "gauge.with.dots.needle.67percent")
+                .labelStyle(.titleAndIcon)
         }
     }
 
@@ -87,7 +77,6 @@ private struct MiniBarColumn: View {
     var body: some View {
         let fraction = min(max(headroomPercent / 100.0, 0.12), 1.0)
         VStack(spacing: 1) {
-            // Subtle headroom ceiling cap tick
             Rectangle()
                 .fill(Color.primary.opacity(0.45))
                 .frame(width: 4, height: 1)

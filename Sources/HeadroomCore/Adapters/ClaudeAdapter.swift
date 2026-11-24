@@ -7,8 +7,13 @@ public struct ClaudeAdapter: ProviderAdapter {
 
     public func fetchUsage(account: AccountConfig, context: AdapterContext) async -> ProviderSnapshot {
         let now = context.now()
-        let creds = context.credentials.discover(for: .claude, accountLabel: account.label)
-        let localSummary = context.logParser.parseClaudeLogs(since: now.addingTimeInterval(-5 * 3600))
+        let creds = context.credentials.discover(for: account)
+        let localSummary: LocalUsageSummary
+        if account.resolvedAllowGlobalCLI {
+            localSummary = context.logParser.parseClaudeLogs(since: now.addingTimeInterval(-5 * 3600))
+        } else {
+            localSummary = LocalUsageSummary(provider: .claude, requestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, estimatedCostUSD: 0, earliestEvent: nil, latestEvent: nil)
+        }
         let localCost = localSummary.estimatedCostUSD > 0 ? localSummary.estimatedCostUSD : nil
 
         // 1. Primary: claude.ai browser session cookie (captures both web chat + Claude Code shared window)

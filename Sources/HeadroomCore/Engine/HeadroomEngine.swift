@@ -373,7 +373,39 @@ public enum DemoFixtures {
             estimatedLocalCostUSD: 2.15
         )
 
-        let snapshots = [codex, claude, cursor, grok, gemini].sorted { $0.urgencyScore > $1.urgencyScore }
+        let claudeWork = ProviderSnapshot(
+            provider: .claude,
+            accountLabel: "work",
+            status: .ok,
+            windows: [
+                QuotaWindow(
+                    id: "session_5h",
+                    label: "5h Session",
+                    unit: .percent,
+                    used: 28.0,
+                    limit: 100.0,
+                    resetsAt: now.addingTimeInterval(3 * 3600 + 50 * 60),
+                    windowDurationSec: 18000,
+                    now: now
+                ),
+                QuotaWindow(
+                    id: "weekly_7d",
+                    label: "Weekly Cap",
+                    unit: .percent,
+                    used: 19.0,
+                    limit: 100.0,
+                    resetsAt: now.addingTimeInterval(4 * 86400 + 2 * 3600),
+                    windowDurationSec: 604800,
+                    now: now
+                )
+            ],
+            fetchedAt: now,
+            source: "demo:keychain:cookie (work)",
+            billingModel: .subscription,
+            estimatedLocalCostUSD: 6.40
+        )
+
+        let snapshots = [codex, claude, claudeWork, cursor, grok, gemini].sorted { $0.urgencyScore > $1.urgencyScore }
         let sharedPools = PoolDeduplicator.buildSharedPools(from: snapshots)
         return HeadroomState(schemaVersion: 1, updatedAt: now, snapshots: snapshots, sharedPools: sharedPools)
     }

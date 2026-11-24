@@ -1,6 +1,33 @@
 import SwiftUI
 import HeadroomCore
 
+public struct AccountLabelPill: View {
+    let label: String
+    let privacyMode: Bool
+
+    public init(label: String, privacyMode: Bool = false) {
+        self.label = label
+        self.privacyMode = privacyMode
+    }
+
+    private var tint: Color {
+        switch label.lowercased() {
+        case "work": return Color(red: 0.39, green: 0.40, blue: 0.95)     // Indigo
+        case "personal": return Color(red: 0.08, green: 0.72, blue: 0.65) // Teal
+        default: return .secondary
+        }
+    }
+
+    public var body: some View {
+        Text(privacyMode ? "••••" : label.capitalized)
+            .font(.system(size: 9.5, weight: .semibold))
+            .foregroundStyle(privacyMode ? .secondary : tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1.5)
+            .background((privacyMode ? Color.secondary : tint).opacity(0.14), in: Capsule())
+    }
+}
+
 public struct ProviderCardView: View {
     let snapshot: ProviderSnapshot
     let privacyMode: Bool
@@ -29,8 +56,8 @@ public struct ProviderCardView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Header row: Provider identity + right-aligned hero headroom or status badge
+        VStack(alignment: .leading, spacing: 9) {
+            // Header row: Provider identity + account badge + single-window hero or clean disclosure
             HStack(spacing: 8) {
                 ProviderBadgeIcon(provider: snapshot.provider, tint: accentColor)
 
@@ -41,12 +68,7 @@ public struct ProviderCardView: View {
                             .foregroundStyle(.primary)
 
                         if showAccountLabel {
-                            Text(privacyMode ? "••••" : snapshot.accountLabel)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Color.primary.opacity(0.06), in: Capsule())
+                            AccountLabelPill(label: snapshot.accountLabel, privacyMode: privacyMode)
                         }
                     }
 
@@ -80,7 +102,7 @@ public struct ProviderCardView: View {
             } else if snapshot.windows.isEmpty {
                 localTelemetryOrNoticeView
             } else {
-                VStack(spacing: 10) {
+                VStack(spacing: 9) {
                     ForEach(snapshot.windows) { window in
                         QuotaWindowRow(
                             window: window,
@@ -91,7 +113,6 @@ public struct ProviderCardView: View {
                 }
             }
 
-            // Expandable detail drawer (source, burn multiplier, local cost, quick actions)
             if isExpanded {
                 Divider()
                     .opacity(0.35)
@@ -99,7 +120,7 @@ public struct ProviderCardView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(11)
+        .padding(10.5)
         .background(
             RoundedRectangle(cornerRadius: HeadroomTheme.cardCornerRadius, style: .continuous)
                 .fill(Color.primary.opacity(isHovered ? 0.065 : 0.04))
@@ -133,7 +154,6 @@ public struct ProviderCardView: View {
         } else if snapshot.status == .incident {
             StatusBadge(text: "Offline", color: HeadroomTheme.burningFast)
         } else if snapshot.windows.count == 1, let single = snapshot.windows.first {
-            // Single-window provider: surface the hero headroom % directly in the card header!
             if privacyMode {
                 Text("••% left")
                     .font(.system(size: 13.5, weight: .semibold))
@@ -147,18 +167,11 @@ public struct ProviderCardView: View {
             }
         } else if snapshot.status == .stale && snapshot.windows.isEmpty {
             StatusBadge(text: "Local Only", color: HeadroomTheme.stale)
-        } else if let primary = snapshot.primaryWindow {
-            if privacyMode {
-                Text("••% left")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("\(Int(primary.headroomPercent.rounded()))% min")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(HeadroomTheme.statusColor(for: primary.paceStatus, headroom: primary.headroomPercent))
-            }
+        } else {
+            // Multi-window cards show exact remaining % on each window row; keep header calm & unambiguous.
+            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.tertiary)
         }
     }
 
@@ -275,16 +288,18 @@ public struct ProviderCardView: View {
 public struct SharedPoolCardView: View {
     let pool: SharedPoolGroup
     let privacyMode: Bool
+    let showAccountLabel: Bool
 
     @State private var isHovered = false
 
-    public init(pool: SharedPoolGroup, privacyMode: Bool) {
+    public init(pool: SharedPoolGroup, privacyMode: Bool, showAccountLabel: Bool = false) {
         self.pool = pool
         self.privacyMode = privacyMode
+        self.showAccountLabel = showAccountLabel
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -296,8 +311,13 @@ public struct SharedPoolCardView: View {
                 .frame(width: 22, height: 22)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(pool.label)
-                        .font(.system(size: 13, weight: .semibold))
+                    HStack(spacing: 5) {
+                        Text(pool.label)
+                            .font(.system(size: 13, weight: .semibold))
+                        if showAccountLabel {
+                            AccountLabelPill(label: pool.accountLabel, privacyMode: privacyMode)
+                        }
+                    }
                     HStack(spacing: 4) {
                         ForEach(pool.memberProviders) { provider in
                             Text(provider.displayName)
@@ -351,7 +371,7 @@ public struct SharedPoolCardView: View {
                 }
             }
         }
-        .padding(11)
+        .padding(10.5)
         .background(
             RoundedRectangle(cornerRadius: HeadroomTheme.cardCornerRadius, style: .continuous)
                 .fill(HeadroomTheme.sharedPool.opacity(isHovered ? 0.085 : 0.06))
@@ -403,7 +423,6 @@ public struct QuotaWindowRow: View {
                 }
             }
 
-            // Dual-track meter: usage bar rising toward ceiling + vertical elapsed-time pace tick
             GeometryReader { geo in
                 let usedFrac = privacyMode ? 0.42 : min(max(window.usedPercent / 100.0, 0), 1)
                 let elapsedFrac = min(max((window.paceDetail?.elapsedPercent ?? 0) / 100.0, 0), 1)
@@ -417,7 +436,6 @@ public struct QuotaWindowRow: View {
                             .frame(width: max(6, geo.size.width * usedFrac))
                     }
 
-                    // Elapsed-time pace marker tick (shows where linear burn would be right now)
                     if !privacyMode && elapsedFrac > 0.03 && elapsedFrac < 0.98 {
                         RoundedRectangle(cornerRadius: 1)
                             .fill(Color.primary.opacity(0.85))
@@ -491,12 +509,21 @@ public struct QuotaWindowRow: View {
 
 public struct CompactUnconfiguredRow: View {
     let snapshot: ProviderSnapshot
+    let showAccountLabel: Bool
+    let privacyMode: Bool
     let onConnect: () -> Void
 
     @State private var isHovered = false
 
-    public init(snapshot: ProviderSnapshot, onConnect: @escaping () -> Void) {
+    public init(
+        snapshot: ProviderSnapshot,
+        showAccountLabel: Bool = false,
+        privacyMode: Bool = false,
+        onConnect: @escaping () -> Void
+    ) {
         self.snapshot = snapshot
+        self.showAccountLabel = showAccountLabel
+        self.privacyMode = privacyMode
         self.onConnect = onConnect
     }
 
@@ -506,6 +533,9 @@ public struct CompactUnconfiguredRow: View {
             Text(snapshot.provider.displayName)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.primary)
+            if showAccountLabel {
+                AccountLabelPill(label: snapshot.accountLabel, privacyMode: privacyMode)
+            }
             Text("Not connected")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)

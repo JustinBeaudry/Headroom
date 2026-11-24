@@ -8,7 +8,7 @@ public struct GrokAdapter: ProviderAdapter {
 
     public func fetchUsage(account: AccountConfig, context: AdapterContext) async -> ProviderSnapshot {
         let now = context.now()
-        let creds = context.credentials.discover(for: .grok, accountLabel: account.label)
+        let creds = context.credentials.discover(for: account)
 
         let cookieCred = creds.first(where: { $0.kind == .sessionCookie })
         let apiKeyCred = creds.first(where: { $0.kind == .apiKey })

@@ -27,6 +27,11 @@ public struct AccountConfig: Codable, Sendable, Hashable, Identifiable {
     public var apiBudgetUSD: Double?
     public var dailyRequestLimit: Double?
     public var claudeOrgId: String?
+    /// When false, this account is strictly isolated to its own Keychain credentials and optional `cliConfigDir`
+    /// so secondary accounts (e.g. `work`) never leak credentials or local logs from `personal`.
+    public var useLocalCLIDiscovery: Bool?
+    /// Optional custom CLI config directory (e.g. `~/.claude-work` or `~/.codex-work`) for multi-profile CLI setups.
+    public var cliConfigDir: String?
 
     enum CodingKeys: String, CodingKey {
         case provider
@@ -37,6 +42,8 @@ public struct AccountConfig: Codable, Sendable, Hashable, Identifiable {
         case apiBudgetUSD = "api_budget_usd"
         case dailyRequestLimit = "daily_request_limit"
         case claudeOrgId = "claude_org_id"
+        case useLocalCLIDiscovery = "use_local_cli_discovery"
+        case cliConfigDir = "cli_config_dir"
     }
 
     public init(
@@ -47,7 +54,9 @@ public struct AccountConfig: Codable, Sendable, Hashable, Identifiable {
         gcpProjectId: String? = nil,
         apiBudgetUSD: Double? = nil,
         dailyRequestLimit: Double? = nil,
-        claudeOrgId: String? = nil
+        claudeOrgId: String? = nil,
+        useLocalCLIDiscovery: Bool? = nil,
+        cliConfigDir: String? = nil
     ) {
         self.provider = provider
         self.label = label
@@ -57,6 +66,12 @@ public struct AccountConfig: Codable, Sendable, Hashable, Identifiable {
         self.apiBudgetUSD = apiBudgetUSD
         self.dailyRequestLimit = dailyRequestLimit
         self.claudeOrgId = claudeOrgId
+        self.useLocalCLIDiscovery = useLocalCLIDiscovery
+        self.cliConfigDir = cliConfigDir
+    }
+
+    public var resolvedAllowGlobalCLI: Bool {
+        useLocalCLIDiscovery ?? (label == "personal" || label == "default")
     }
 }
 

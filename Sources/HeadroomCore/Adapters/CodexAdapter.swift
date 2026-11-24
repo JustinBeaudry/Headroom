@@ -7,8 +7,13 @@ public struct CodexAdapter: ProviderAdapter {
 
     public func fetchUsage(account: AccountConfig, context: AdapterContext) async -> ProviderSnapshot {
         let now = context.now()
-        let creds = context.credentials.discover(for: .codex, accountLabel: account.label)
-        let localSummary = context.logParser.parseCodexLogs(since: now.addingTimeInterval(-5 * 3600))
+        let creds = context.credentials.discover(for: account)
+        let localSummary: LocalUsageSummary
+        if account.resolvedAllowGlobalCLI {
+            localSummary = context.logParser.parseCodexLogs(since: now.addingTimeInterval(-5 * 3600))
+        } else {
+            localSummary = LocalUsageSummary(provider: .codex, requestCount: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, estimatedCostUSD: 0, earliestEvent: nil, latestEvent: nil)
+        }
         let localCost = localSummary.estimatedCostUSD > 0 ? localSummary.estimatedCostUSD : nil
 
         // 1. Primary: Codex CLI OAuth token -> ChatGPT/Codex subscription usage endpoint

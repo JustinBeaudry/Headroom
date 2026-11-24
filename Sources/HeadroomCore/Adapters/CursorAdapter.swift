@@ -8,7 +8,7 @@ public struct CursorAdapter: ProviderAdapter {
 
     public func fetchUsage(account: AccountConfig, context: AdapterContext) async -> ProviderSnapshot {
         let now = context.now()
-        let creds = context.credentials.discover(for: .cursor, accountLabel: account.label)
+        let creds = context.credentials.discover(for: account)
 
         let cookieCred = creds.first(where: { $0.kind == .sessionCookie })
         let tokenCred = creds.first(where: { $0.kind == .oauthToken })

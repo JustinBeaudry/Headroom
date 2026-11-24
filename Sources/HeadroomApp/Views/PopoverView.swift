@@ -10,9 +10,9 @@ public struct PopoverView: View {
         self.viewModel = viewModel
     }
 
-    private func openSettingsWindow(for provider: ProviderID? = nil) {
+    private func openSettingsWindow(for provider: ProviderID? = nil, accountLabel: String? = nil) {
         if let provider {
-            viewModel.selectedSettingsProvider = provider
+            viewModel.selectForSettings(provider: provider, accountLabel: accountLabel)
         }
         NSApp.activate(ignoringOtherApps: true)
         openSettingsScene()
@@ -21,33 +21,46 @@ public struct PopoverView: View {
     public var body: some View {
         VStack(spacing: 0) {
             header
+                .fixedSize(horizontal: false, vertical: true)
+
+            if viewModel.hasMultipleAccounts {
+                accountFilterBar
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             summaryStrip
+                .fixedSize(horizontal: false, vertical: true)
+
             Divider()
                 .opacity(0.5)
 
-            // Explicit non-collapsing scrollable body:
-            // macOS MenuBarExtra(.window) collapses bare `ScrollView { LazyVStack }` to 0pt
-            // unless given a concrete height bound or regular VStack content height.
+            // Scrollable middle pane pinned cleanly between fixed header & footer.
+            // Using a fixed outer frame on the popover prevents macOS MenuBarExtra(.window)
+            // from clipping the header/footer off-screen when content height changes.
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 9) {
                     if !viewModel.hasCompletedInitialLoad {
                         SkeletonCardView()
                         SkeletonCardView()
                         SkeletonCardView()
-                    } else if viewModel.state.sharedPools.isEmpty && viewModel.activeSnapshots.isEmpty && viewModel.unconfiguredSnapshots.isEmpty {
+                    } else if viewModel.filteredSharedPools.isEmpty && viewModel.activeSnapshots.isEmpty && viewModel.unconfiguredSnapshots.isEmpty {
                         emptyState
                     } else {
-                        ForEach(viewModel.state.sharedPools) { pool in
-                            SharedPoolCardView(pool: pool, privacyMode: viewModel.privacyMode)
+                        ForEach(viewModel.filteredSharedPools) { pool in
+                            SharedPoolCardView(
+                                pool: pool,
+                                privacyMode: viewModel.privacyMode,
+                                showAccountLabel: viewModel.hasMultipleAccounts
+                            )
                         }
 
                         ForEach(viewModel.activeSnapshots) { snapshot in
                             ProviderCardView(
                                 snapshot: snapshot,
                                 privacyMode: viewModel.privacyMode,
-                                showAccountLabel: viewModel.hasMultipleAccounts,
+                                showAccountLabel: viewModel.hasMultipleAccounts || viewModel.hasMultipleAccounts(for: snapshot.provider),
                                 onReauth: { viewModel.openReauth(for: snapshot.provider) },
-                                onConfigure: { openSettingsWindow(for: snapshot.provider) },
+                                onConfigure: { openSettingsWindow(for: snapshot.provider, accountLabel: snapshot.accountLabel) },
                                 onRefresh: { Task { await viewModel.refresh(force: true) } }
                             )
                         }
@@ -64,7 +77,9 @@ public struct PopoverView: View {
                                 ForEach(viewModel.unconfiguredSnapshots) { snapshot in
                                     CompactUnconfiguredRow(
                                         snapshot: snapshot,
-                                        onConnect: { openSettingsWindow(for: snapshot.provider) }
+                                        showAccountLabel: viewModel.hasMultipleAccounts || viewModel.hasMultipleAccounts(for: snapshot.provider),
+                                        privacyMode: viewModel.privacyMode,
+                                        onConnect: { openSettingsWindow(for: snapshot.provider, accountLabel: snapshot.accountLabel) }
                                     )
                                 }
                             }
@@ -73,36 +88,16 @@ public struct PopoverView: View {
                 }
                 .padding(12)
             }
-            .frame(height: computedScrollHeight)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
 
             Divider()
                 .opacity(0.5)
-            footer
-        }
-        .frame(width: HeadroomTheme.popoverWidth)
-    }
 
-    /// Computes a crisp, exact height for the scroll viewport so MenuBarExtra never collapses to 0pt
-    /// and never leaves awkward dead whitespace.
-    private var computedScrollHeight: CGFloat {
-        if !viewModel.hasCompletedInitialLoad {
-            return 280
+            footer
+                .fixedSize(horizontal: false, vertical: true)
         }
-        if viewModel.state.sharedPools.isEmpty && viewModel.activeSnapshots.isEmpty && viewModel.unconfiguredSnapshots.isEmpty {
-            return 210
-        }
-        var estimated: CGFloat = 24 // top + bottom padding
-        for pool in viewModel.state.sharedPools {
-            estimated += 108 + CGFloat(pool.supplementaryWindows.count) * 52 + 9
-        }
-        for snap in viewModel.activeSnapshots {
-            let winHeight = snap.windows.isEmpty ? 64 : CGFloat(snap.windows.count) * 52
-            estimated += 46 + winHeight + 9
-        }
-        if !viewModel.unconfiguredSnapshots.isEmpty {
-            estimated += 24 + CGFloat(viewModel.unconfiguredSnapshots.count) * 44
-        }
-        return min(max(estimated, 200), 500)
+        .frame(width: HeadroomTheme.popoverWidth, height: 540)
     }
 
     private var header: some View {
@@ -166,7 +161,34 @@ public struct PopoverView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(.vertical, 10)
+    }
+
+    private var accountFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                AccountFilterChip(
+                    title: "All",
+                    isSelected: viewModel.selectedAccountFilter == nil
+                ) {
+                    withAnimation(.easeOut(duration: 0.14)) {
+                        viewModel.selectedAccountFilter = nil
+                    }
+                }
+                ForEach(viewModel.availableAccountLabels, id: \.self) { label in
+                    AccountFilterChip(
+                        title: viewModel.privacyMode ? "••••" : label.capitalized,
+                        isSelected: viewModel.selectedAccountFilter == label
+                    ) {
+                        withAnimation(.easeOut(duration: 0.14)) {
+                            viewModel.selectedAccountFilter = label
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
+        }
     }
 
     @ViewBuilder
@@ -183,10 +205,11 @@ public struct PopoverView: View {
                             .fontWeight(.semibold)
                             .monospacedDigit()
                             .foregroundStyle(best.headroom > 35 ? HeadroomTheme.reserve : HeadroomTheme.onTrack)
+                            .lineLimit(1)
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 6)
 
                 if let reset = viewModel.nextResetSummary {
                     HStack(spacing: 4) {
@@ -196,6 +219,7 @@ public struct PopoverView: View {
                         Text("\(reset.label) in \(reset.countdown)")
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
             }
@@ -234,7 +258,7 @@ public struct PopoverView: View {
             .padding(.top, 2)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 24)
+        .padding(.vertical, 36)
     }
 
     private var footer: some View {
@@ -250,7 +274,9 @@ public struct PopoverView: View {
 
             Spacer()
 
-            SettingsLink {
+            Button {
+                openSettingsWindow()
+            } label: {
                 Label("Settings", systemImage: "gearshape")
                     .font(.system(size: 11.5, weight: .medium))
             }
@@ -269,5 +295,26 @@ public struct PopoverView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+}
+
+private struct AccountFilterChip: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                .foregroundStyle(isSelected ? .primary : .secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 3.5)
+                .background(
+                    Capsule()
+                        .fill(isSelected ? Color.primary.opacity(0.14) : Color.primary.opacity(0.05))
+                )
+        }
+        .buttonStyle(.plain)
     }
 }

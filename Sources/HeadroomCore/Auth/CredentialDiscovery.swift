@@ -17,6 +17,13 @@ public struct DiscoveredCredential: Sendable, Hashable {
 
 public protocol CredentialDiscovering: Sendable {
     func discover(for provider: ProviderID, accountLabel: String) -> [DiscoveredCredential]
+    func discover(for account: AccountConfig) -> [DiscoveredCredential]
+}
+
+public extension CredentialDiscovering {
+    func discover(for account: AccountConfig) -> [DiscoveredCredential] {
+        discover(for: account.provider, accountLabel: account.label)
+    }
 }
 
 /// Zero-password / session-reuse credential discovery:
@@ -41,9 +48,23 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
     }
 
     public func discover(for provider: ProviderID, accountLabel: String) -> [DiscoveredCredential] {
+        discover(for: AccountConfig(provider: provider, label: accountLabel))
+    }
+
+    public func discover(for account: AccountConfig) -> [DiscoveredCredential] {
+        let provider = account.provider
+        let accountLabel = account.label
+        let allowGlobalCLI = account.resolvedAllowGlobalCLI
+        let customDir: URL? = account.cliConfigDir.flatMap { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            let expanded = NSString(string: trimmed).expandingTildeInPath
+            return URL(fileURLWithPath: expanded, isDirectory: true)
+        }
+
         var found: [DiscoveredCredential] = []
 
-        // 1. Explicit Keychain credentials stored by `headroom auth set`
+        // 1. Account-scoped Keychain credentials stored by `headroom auth set` or Settings UI
         for kind in [CredentialKind.sessionCookie, .oauthToken, .apiKey] {
             if let secret = secretStore.getSecret(provider: provider, accountLabel: accountLabel, kind: kind),
                !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -51,13 +72,38 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
             }
         }
 
-        // 2. Provider-specific environment variables and local CLI/editor caches
+        // 2. Account-specific custom CLI config directory (e.g. ~/.claude-work, ~/.codex-work)
+        if let customDir {
+            switch provider {
+            case .claude:
+                if let token = readClaudeCodeOAuthToken(in: customDir, allowExternalKeychain: false) {
+                    found.append(token)
+                }
+            case .codex:
+                if let token = readCodexCLIOAuthToken(in: customDir) {
+                    found.append(token)
+                }
+            case .gemini:
+                if let oauth = readGeminiCLIOAuthToken(in: customDir) {
+                    found.append(oauth)
+                }
+            case .grok, .cursor:
+                break
+            }
+        }
+
+        // 3. Global env vars and default local CLI/editor caches — ONLY for primary/global-enabled accounts
+        //    so secondary accounts (e.g. `work`) never leak `personal` CLI credentials.
+        guard allowGlobalCLI else {
+            return found
+        }
+
         switch provider {
         case .claude:
             if let cookie = env("HEADROOM_CLAUDE_SESSION_KEY") ?? env("CLAUDE_SESSION_KEY") {
                 found.append(DiscoveredCredential(kind: .sessionCookie, value: cookie, source: "env:HEADROOM_CLAUDE_SESSION_KEY"))
             }
-            if let token = readClaudeCodeOAuthToken() {
+            if let token = readClaudeCodeOAuthToken(in: homeDirectory.appendingPathComponent(".claude"), allowExternalKeychain: readExternalKeychain) {
                 found.append(token)
             }
             if let apiKey = env("ANTHROPIC_API_KEY") {
@@ -65,7 +111,7 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
             }
 
         case .codex:
-            if let token = readCodexCLIOAuthToken() {
+            if let token = readCodexCLIOAuthToken(in: homeDirectory.appendingPathComponent(".codex")) {
                 found.append(token)
             }
             if let cookie = env("HEADROOM_OPENAI_SESSION_TOKEN") ?? env("CHATGPT_SESSION_TOKEN") {
@@ -76,7 +122,7 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
             }
 
         case .gemini:
-            if let oauth = readGeminiCLIOAuthToken() {
+            if let oauth = readGeminiCLIOAuthToken(in: homeDirectory.appendingPathComponent(".gemini")) {
                 found.append(oauth)
             }
             if let adc = readGCloudAccessToken() {
@@ -115,16 +161,15 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
 
     // MARK: - Claude Code CLI OAuth cache
 
-    private func readClaudeCodeOAuthToken() -> DiscoveredCredential? {
-        // Check ~/.claude/.credentials.json first
-        let credURL = homeDirectory.appendingPathComponent(".claude/.credentials.json")
+    private func readClaudeCodeOAuthToken(in dir: URL, allowExternalKeychain: Bool) -> DiscoveredCredential? {
+        let credURL = dir.appendingPathComponent(".credentials.json")
         if let data = try? Data(contentsOf: credURL),
            let token = extractClaudeOAuthToken(from: data) {
-            return DiscoveredCredential(kind: .oauthToken, value: token, source: "file:~/.claude/.credentials.json")
+            return DiscoveredCredential(kind: .oauthToken, value: token, source: "file:\(abbreviate(credURL))")
         }
 
         // Check macOS Keychain item written by Claude Code CLI ("Claude Code-credentials")
-        if readExternalKeychain, let keychain = secretStore as? KeychainStore,
+        if allowExternalKeychain, let keychain = secretStore as? KeychainStore,
            let raw = keychain.readExternalGenericPassword(service: "Claude Code-credentials"),
            let data = raw.data(using: .utf8),
            let token = extractClaudeOAuthToken(from: data) {
@@ -150,39 +195,48 @@ public final class CredentialDiscovery: CredentialDiscovering, Sendable {
 
     // MARK: - Codex CLI OAuth cache
 
-    private func readCodexCLIOAuthToken() -> DiscoveredCredential? {
-        let authURL = homeDirectory.appendingPathComponent(".codex/auth.json")
+    private func readCodexCLIOAuthToken(in dir: URL) -> DiscoveredCredential? {
+        let authURL = dir.appendingPathComponent("auth.json")
         guard let data = try? Data(contentsOf: authURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
+        let src = "file:\(abbreviate(authURL))"
         if let tokens = json["tokens"] as? [String: Any],
            let access = tokens["access_token"] as? String, !access.isEmpty {
             var meta: [String: String] = [:]
             if let accountId = tokens["account_id"] as? String {
                 meta["account_id"] = accountId
             }
-            return DiscoveredCredential(kind: .oauthToken, value: access, source: "file:~/.codex/auth.json", metadata: meta)
+            return DiscoveredCredential(kind: .oauthToken, value: access, source: src, metadata: meta)
         }
         if let access = json["access_token"] as? String, !access.isEmpty {
-            return DiscoveredCredential(kind: .oauthToken, value: access, source: "file:~/.codex/auth.json")
+            return DiscoveredCredential(kind: .oauthToken, value: access, source: src)
         }
         if let apiKey = json["OPENAI_API_KEY"] as? String, !apiKey.isEmpty {
-            return DiscoveredCredential(kind: .apiKey, value: apiKey, source: "file:~/.codex/auth.json")
+            return DiscoveredCredential(kind: .apiKey, value: apiKey, source: src)
         }
         return nil
     }
 
     // MARK: - Gemini CLI OAuth & GCP ADC
 
-    private func readGeminiCLIOAuthToken() -> DiscoveredCredential? {
-        let credsURL = homeDirectory.appendingPathComponent(".gemini/oauth_creds.json")
+    private func readGeminiCLIOAuthToken(in dir: URL) -> DiscoveredCredential? {
+        let credsURL = dir.appendingPathComponent("oauth_creds.json")
         guard let data = try? Data(contentsOf: credsURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = json["access_token"] as? String, !access.isEmpty else {
             return nil
         }
-        return DiscoveredCredential(kind: .oauthToken, value: access, source: "file:~/.gemini/oauth_creds.json")
+        return DiscoveredCredential(kind: .oauthToken, value: access, source: "file:\(abbreviate(credsURL))")
+    }
+
+    private func abbreviate(_ url: URL) -> String {
+        let home = homeDirectory.path
+        if url.path.hasPrefix(home) {
+            return "~" + url.path.dropFirst(home.count)
+        }
+        return url.path
     }
 
     private func readGCloudAccessToken() -> DiscoveredCredential? {

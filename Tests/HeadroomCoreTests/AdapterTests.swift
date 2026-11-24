@@ -253,6 +253,45 @@ final class AdapterTests: XCTestCase {
         XCTAssertEqual(snap.windows.first(where: { $0.id == "xai_api_credits" })?.used, 7.0)
     }
 
+    func testMultiAccountWorkIsolationDoesNotLeakPersonalCLICredentialsOrLogs() async throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-multi-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempHome.appendingPathComponent(".codex"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tempHome.appendingPathComponent(".codex-work"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempHome) }
+
+        try #"{"access_token":"personal-token"}"#.data(using: .utf8)!
+            .write(to: tempHome.appendingPathComponent(".codex/auth.json"))
+        try #"{"access_token":"work-custom-token"}"#.data(using: .utf8)!
+            .write(to: tempHome.appendingPathComponent(".codex-work/auth.json"))
+
+        let store = InMemorySecretStore()
+        try store.setSecret("claude-work-cookie", provider: .claude, accountLabel: "work", kind: .sessionCookie)
+        let discovery = CredentialDiscovery(secretStore: store, homeDirectory: tempHome, environment: [:], readExternalKeychain: false)
+
+        // Secondary work account without cliConfigDir must NOT pick up personal ~/.codex/auth.json
+        let isolatedWorkCodex = AccountConfig(provider: .codex, label: "work", useLocalCLIDiscovery: false)
+        XCTAssertTrue(discovery.discover(for: isolatedWorkCodex).isEmpty)
+
+        // Work account WITH cliConfigDir picks up ONLY ~/.codex-work/auth.json
+        let customDirWorkCodex = AccountConfig(
+            provider: .codex,
+            label: "work",
+            useLocalCLIDiscovery: false,
+            cliConfigDir: tempHome.appendingPathComponent(".codex-work").path
+        )
+        let discoveredWork = discovery.discover(for: customDirWorkCodex)
+        XCTAssertEqual(discoveredWork.count, 1)
+        XCTAssertEqual(discoveredWork.first?.value, "work-custom-token")
+
+        // Personal account picks up ~/.codex/auth.json
+        let personalCodex = AccountConfig(provider: .codex, label: "personal")
+        XCTAssertEqual(discovery.discover(for: personalCodex).first?.value, "personal-token")
+
+        // Claude work account picks up its own Keychain cookie without leaking personal local JSONL logs
+        let claudeWork = AccountConfig(provider: .claude, label: "work", useLocalCLIDiscovery: false)
+        XCTAssertEqual(discovery.discover(for: claudeWork).first?.value, "claude-work-cookie")
+    }
+
     func testGeminiLaneSwitchingCLIVsGCPQuota() async throws {
         var logs = StubLogParser()
         logs.gemini = LocalUsageSummary(

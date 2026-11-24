@@ -32,6 +32,8 @@ public struct PopoverView: View {
             if let update = viewModel.visibleBannerUpdate {
                 updateBanner(for: update)
                     .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                    .opacity(0.35)
             }
 
             if viewModel.hasMultipleAccounts {
@@ -229,7 +231,7 @@ public struct PopoverView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.bottom, 8)
+            .padding(.vertical, 8)
         }
     }
 

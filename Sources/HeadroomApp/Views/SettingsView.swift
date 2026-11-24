@@ -840,6 +840,23 @@ private struct UpdatesSettingsPane: View {
     @Bindable var viewModel: HeadroomViewModel
     let openUpdateWindow: () -> Void
 
+    private var isInstalling: Bool {
+        switch viewModel.updateProgress {
+        case .downloading, .verifying, .installing: return true
+        case .idle, .failed: return false
+        }
+    }
+
+    private var progressText: String? {
+        switch viewModel.updateProgress {
+        case .idle: return nil
+        case .downloading: return "Downloading signed release archive..."
+        case .verifying: return "Verifying SHA-256 checksum & Apple Developer signature..."
+        case .installing: return "Installing update & relaunching Headroom..."
+        case .failed(let msg): return msg
+        }
+    }
+
     var body: some View {
         Form {
             Section("Software Updates") {
@@ -877,21 +894,90 @@ private struct UpdatesSettingsPane: View {
                             Text("Check for Updates")
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(viewModel.isCheckingForUpdates)
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.isCheckingForUpdates || isInstalling)
 
-                    if viewModel.availableUpdate != nil || viewModel.latestKnownRelease != nil {
-                        Button(viewModel.availableUpdate != nil ? "View What's New" : "Latest Release Notes") {
+                    if let latest = viewModel.latestKnownRelease, viewModel.availableUpdate == nil {
+                        Button("Release Notes (\(latest.tagName))") {
                             openUpdateWindow()
                         }
                         .buttonStyle(.bordered)
                     }
                 }
 
-                if let status = viewModel.updateStatusMessage {
+                if let status = viewModel.updateStatusMessage, viewModel.availableUpdate == nil {
                     Text(status)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            if let release = viewModel.availableUpdate {
+                Section("Update Available: \(release.tagName)") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Text("\(viewModel.currentAppVersion.tagString) -> \(release.tagName)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(HeadroomTheme.sharedPool)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(HeadroomTheme.sharedPool.opacity(0.14), in: Capsule())
+
+                            if let published = release.publishedAt {
+                                Text("Released")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(published, style: .relative)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("ago")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Text(release.summaryHighlight)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if let progressText {
+                            HStack(spacing: 6) {
+                                if isInstalling {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(HeadroomTheme.burningFast)
+                                }
+                                Text(progressText)
+                                    .font(.caption)
+                                    .foregroundStyle(isInstalling ? .secondary : HeadroomTheme.burningFast)
+                            }
+                        }
+
+                        HStack(spacing: 8) {
+                            Button(viewModel.isRunningFromAppBundle ? "Install & Relaunch" : "Download Release") {
+                                Task { await viewModel.installAvailableUpdate() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isInstalling)
+
+                            Button("What's New") {
+                                openUpdateWindow()
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isInstalling)
+
+                            Button("View on GitHub") {
+                                NSWorkspace.shared.open(release.htmlURL)
+                            }
+                            .buttonStyle(.link)
+                            .disabled(isInstalling)
+                        }
+                        .padding(.top, 2)
+                    }
+                    .padding(.vertical, 4)
                 }
             }
         }

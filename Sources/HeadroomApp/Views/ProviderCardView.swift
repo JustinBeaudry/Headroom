@@ -456,13 +456,10 @@ public struct QuotaWindowRow: View {
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(meterColor)
 
-                    if window.usedPercent >= 100.0 {
-                        Text("· Exhausted")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(HeadroomTheme.burningFast)
-                    } else if let detail = window.paceDetail,
-                              detail.willExhaustBeforeReset,
-                              let eta = detail.projectedExhaustionAt {
+                    if window.usedPercent < 100.0,
+                       let detail = window.paceDetail,
+                       detail.willExhaustBeforeReset,
+                       let eta = detail.projectedExhaustionAt {
                         Text("· Out in ~\(PaceCalculator.formatCountdown(until: eta))")
                             .font(.system(size: 10.5))
                             .monospacedDigit()

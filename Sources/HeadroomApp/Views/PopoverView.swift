@@ -141,12 +141,8 @@ public struct PopoverView: View {
                 }
 
                 ToolbarIconButton(
-                    systemName: viewModel.config.menuBarDisplayMode == .mostUrgent
-                        ? "chart.bar.fill"
-                        : "gauge.with.dots.needle.67percent",
-                    helpText: viewModel.config.menuBarDisplayMode == .mostUrgent
-                        ? "Switch menu bar to Mini Bars"
-                        : "Switch menu bar to Most Urgent"
+                    systemName: displayModeIcon,
+                    helpText: "Menu bar style: \(viewModel.config.menuBarDisplayMode.displayName) (click to cycle)"
                 ) {
                     viewModel.toggleDisplayMode()
                 }
@@ -163,6 +159,15 @@ public struct PopoverView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private var displayModeIcon: String {
+        switch viewModel.config.menuBarDisplayMode {
+        case .stackedMetrics: return "rectangle.grid.2x2"
+        case .inlineMetrics: return "textformat.123"
+        case .miniBars: return "chart.bar.fill"
+        case .mostUrgent: return "gauge.with.dots.needle.67percent"
+        }
     }
 
     private func updateBanner(for release: ReleaseInfo) -> some View {

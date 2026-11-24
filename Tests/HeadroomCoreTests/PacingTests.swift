@@ -98,4 +98,26 @@ final class PacingTests: XCTestCase {
         XCTAssertEqual(w["window_duration_sec"] as? Int, 18000)
         XCTAssertEqual(w["pace_status"] as? String, "burning_fast")
     }
+
+    func testLegacyConfigDecodesWithNewMenuBarDefaults() throws {
+        let legacyJSON = """
+        {
+          "accounts": [{"provider": "claude", "label": "personal", "enabled": true}],
+          "polling": {"active_interval_sec": 90, "idle_interval_sec": 1200, "idle_threshold_sec": 600, "stale_after_sec": 1800, "max_backoff_sec": 3600},
+          "alerts": {"enabled": true, "low_headroom_threshold_percent": 20, "notify_projected_exhaustion": true, "notify_window_reset": true, "notify_auth_expired": true, "cooldown_sec": 3600},
+          "menu_bar_display_mode": "most_urgent",
+          "deduplicate_shared_pools": true
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try HeadroomJSON.makeDecoder().decode(HeadroomConfig.self, from: legacyJSON)
+        XCTAssertEqual(decoded.menuBarDisplayMode, .mostUrgent)
+        XCTAssertEqual(decoded.menuBarMetricMode, .remaining)
+        XCTAssertEqual(decoded.menuBarColorize, true)
+        XCTAssertEqual(decoded.menuBarPinnedAccounts, [])
+
+        let win = QuotaWindow(id: "w", label: "5h", unit: .percent, used: 64, limit: 100)
+        XCTAssertEqual(MenuBarMetricMode.remaining.percentage(for: win), 36, accuracy: 0.01)
+        XCTAssertEqual(MenuBarMetricMode.used.percentage(for: win), 64, accuracy: 0.01)
+    }
 }

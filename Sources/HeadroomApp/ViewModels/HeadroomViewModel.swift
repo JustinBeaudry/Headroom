@@ -233,6 +233,9 @@ public final class HeadroomViewModel {
         self.state = result.state
         self.isActivePolling = await engine.isUserActive()
         self.nextPollSeconds = Int(await engine.nextRecommendedInterval())
+        if let filter = selectedAccountFilter, !availableAccountLabels.contains(filter) {
+            selectedAccountFilter = nil
+        }
         refreshCredentialSummaries()
         if !result.alerts.isEmpty {
             self.lastAlerts = Array((result.alerts + self.lastAlerts).prefix(10))
@@ -254,7 +257,26 @@ public final class HeadroomViewModel {
     }
 
     public func toggleDisplayMode() {
-        config.menuBarDisplayMode = (config.menuBarDisplayMode == .mostUrgent) ? .miniBars : .mostUrgent
+        let all = MenuBarDisplayMode.allCases
+        if let idx = all.firstIndex(of: config.menuBarDisplayMode) {
+            config.menuBarDisplayMode = all[(idx + 1) % all.count]
+        } else {
+            config.menuBarDisplayMode = .stackedMetrics
+        }
+        saveConfigAsync()
+    }
+
+    public func toggleMenuBarPinned(_ accountId: String) {
+        if let idx = config.menuBarPinnedAccounts.firstIndex(of: accountId) {
+            config.menuBarPinnedAccounts.remove(at: idx)
+        } else {
+            config.menuBarPinnedAccounts.append(accountId)
+        }
+        saveConfigAsync()
+    }
+
+    public func clearMenuBarPins() {
+        config.menuBarPinnedAccounts = []
         saveConfigAsync()
     }
 
@@ -298,8 +320,11 @@ public final class HeadroomViewModel {
             try? keychain.deleteSecret(provider: account.provider, accountLabel: account.label, kind: kind)
         }
         config.accounts.removeAll { $0.id == account.id }
-        if selectedAccountFilter == account.label && !availableAccountLabels.contains(account.label) {
-            selectedAccountFilter = nil
+        config.menuBarPinnedAccounts.removeAll { $0 == account.id }
+        selectedAccountFilter = nil
+        if let first = config.accounts.first {
+            selectedSettingsProvider = first.provider
+            selectedSettingsAccountLabel = first.label
         }
         saveConfigAsync()
     }
@@ -396,14 +421,21 @@ public final class HeadroomViewModel {
         return max(countInState, countInConfig) > 1
     }
 
+    public var effectiveAccountFilter: String? {
+        guard let filter = selectedAccountFilter, availableAccountLabels.contains(filter) else {
+            return nil
+        }
+        return filter
+    }
+
     public var filteredSharedPools: [SharedPoolGroup] {
-        guard let filter = selectedAccountFilter else { return state.sharedPools }
+        guard let filter = effectiveAccountFilter else { return state.sharedPools }
         return state.sharedPools.filter { $0.accountLabel == filter }
     }
 
     public var standaloneSnapshots: [ProviderSnapshot] {
         let allStandalone = PoolDeduplicator.standaloneSnapshots(from: state.snapshots, sharedPools: state.sharedPools)
-        guard let filter = selectedAccountFilter else { return allStandalone }
+        guard let filter = effectiveAccountFilter else { return allStandalone }
         return allStandalone.filter { $0.accountLabel == filter }
     }
 
@@ -555,6 +587,78 @@ public final class HeadroomViewModel {
             )
         }
         return nil
+    }
+
+    /// Ordered list of live providers/pools to render in the menu bar (respects user pins or auto-picks live accounts).
+    public var menuBarDisplayItems: [MenuBarItemSnapshot] {
+        var candidatesById: [String: (MenuBarItemSnapshot, Double)] = [:]
+
+        for pool in state.sharedPools {
+            let w = pool.canonicalWindow
+            let item = MenuBarItemSnapshot(
+                id: pool.id,
+                shortLabel: "X",
+                fullName: pool.label,
+                headroomPercent: w.headroomPercent,
+                usedPercent: w.usedPercent,
+                pace: w.paceStatus,
+                isAuthExpired: false
+            )
+            candidatesById[pool.id] = (item, PaceCalculator.windowUrgency(w))
+        }
+
+        let allStandalone = PoolDeduplicator.standaloneSnapshots(from: state.snapshots, sharedPools: state.sharedPools)
+        for snap in allStandalone {
+            let multi = hasMultipleAccounts(for: snap.provider)
+            let code: String
+            if multi, let first = snap.accountLabel.first {
+                code = "\(snap.provider.shortCode)·\(String(first).uppercased())"
+            } else {
+                code = snap.provider.shortCode
+            }
+
+            if snap.status == .ok, let primary = snap.primaryWindow {
+                let item = MenuBarItemSnapshot(
+                    id: snap.id,
+                    shortLabel: code,
+                    fullName: "\(snap.provider.displayName) (\(snap.accountLabel.capitalized))",
+                    headroomPercent: primary.headroomPercent,
+                    usedPercent: primary.usedPercent,
+                    pace: primary.paceStatus,
+                    isAuthExpired: false
+                )
+                candidatesById[snap.id] = (item, PaceCalculator.windowUrgency(primary))
+            } else if snap.status == .authExpired {
+                let item = MenuBarItemSnapshot(
+                    id: snap.id,
+                    shortLabel: code,
+                    fullName: "\(snap.provider.displayName) (\(snap.accountLabel.capitalized))",
+                    headroomPercent: 0,
+                    usedPercent: 100,
+                    pace: .burningFast,
+                    isAuthExpired: true
+                )
+                candidatesById[snap.id] = (item, 75.0)
+            }
+        }
+
+        // If user explicitly pinned accounts in Settings -> Menu Bar, show those in pinned order
+        if !config.menuBarPinnedAccounts.isEmpty {
+            let pinned = config.menuBarPinnedAccounts.compactMap { candidatesById[$0]?.0 }
+            if !pinned.isEmpty {
+                return pinned
+            }
+        }
+
+        // Otherwise show all live `.ok` items sorted by urgency (most urgent first)
+        let liveItems = candidatesById.values
+            .filter { !$0.0.isAuthExpired }
+            .sorted { $0.1 > $1.1 }
+            .map(\.0)
+        if !liveItems.isEmpty {
+            return liveItems
+        }
+        return candidatesById.values.sorted { $0.1 > $1.1 }.map(\.0)
     }
 
     public var miniBarEntries: [MiniBarEntry] {

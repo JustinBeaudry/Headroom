@@ -9,6 +9,7 @@ DIST_DIR="$ROOT_DIR/dist"
 BUNDLE_DIR="$DIST_DIR/${APP_NAME}.app"
 CONTENTS_DIR="$BUNDLE_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
+HELPERS_DIR="$CONTENTS_DIR/Helpers"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ICON_SRC="$ROOT_DIR/Assets/AppIcon.png"
 ENTITLEMENTS_PATH="$ROOT_DIR/Config/Headroom.entitlements"
@@ -19,10 +20,20 @@ cd "$ROOT_DIR"
 swift build -c release ${HEADROOM_SWIFT_BUILD_FLAGS:-}
 
 rm -rf "$BUNDLE_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+mkdir -p "$MACOS_DIR" "$HELPERS_DIR" "$RESOURCES_DIR"
 
+# Keep GUI app binary and CLI helper in separate directories so case-insensitive APFS
+# never collides `Headroom` with `headroom`.
 cp "$ROOT_DIR/.build/release/HeadroomApp" "$MACOS_DIR/$APP_NAME"
-cp "$ROOT_DIR/.build/release/headroom" "$MACOS_DIR/headroom"
+cp "$ROOT_DIR/.build/release/headroom" "$HELPERS_DIR/headroom"
+
+# Sanity check: ensure the main executable really is the SwiftUI GUI binary
+if command -v otool >/dev/null 2>&1; then
+    if ! otool -L "$MACOS_DIR/$APP_NAME" | grep -q "SwiftUI"; then
+        echo "ERROR: $MACOS_DIR/$APP_NAME does not link SwiftUI!" >&2
+        exit 1
+    fi
+fi
 
 # Generate native macOS AppIcon.icns from Assets/AppIcon.png if available
 ICON_PLIST_ENTRY=""
@@ -102,7 +113,7 @@ if command -v codesign >/dev/null 2>&1; then
             SIGN_FLAGS+=(--entitlements "$ENTITLEMENTS_PATH")
         fi
         # Sign embedded CLI helper first, then the outer app bundle (inside-out)
-        codesign "${SIGN_FLAGS[@]}" "$MACOS_DIR/headroom"
+        codesign "${SIGN_FLAGS[@]}" "$HELPERS_DIR/headroom"
         codesign "${SIGN_FLAGS[@]}" "$BUNDLE_DIR"
         codesign --verify --deep --strict --verbose=2 "$BUNDLE_DIR"
         echo "Verified Developer ID code signature"
@@ -160,7 +171,7 @@ if [ "${HEADROOM_CREATE_ARCHIVES:-0}" = "1" ]; then
     fi
 
     # Package signed CLI binary (use the signed binary inside the app bundle)
-    tar -czf "$CLI_TAR_PATH" -C "$MACOS_DIR" headroom
+    tar -czf "$CLI_TAR_PATH" -C "$HELPERS_DIR" headroom
 
     if command -v hdiutil >/dev/null 2>&1; then
         DMG_STAGING="$(mktemp -d /tmp/headroom-dmg.XXXXXX)"

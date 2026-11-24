@@ -57,7 +57,7 @@ Every push to `main` automatically runs tests, bundles `Headroom.app` (with nati
 2. Drag **Headroom.app** into `/Applications` and launch it.
 3. *(Optional)* Symlink the bundled CLI into your `PATH`:
    ```bash
-   sudo ln -sf /Applications/Headroom.app/Contents/MacOS/headroom /usr/local/bin/headroom
+   sudo ln -sf /Applications/Headroom.app/Contents/Helpers/headroom /usr/local/bin/headroom
    ```
 
 ### Option 2: Build from Source

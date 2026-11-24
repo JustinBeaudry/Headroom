@@ -33,12 +33,17 @@ jobs:
 
       - name: Import Apple Developer ID certificate (if configured)
         id: signing
-        if: ${{ secrets.APPLE_CERT_BASE64 != '' && secrets.APPLE_CERT_PASSWORD != '' }}
         env:
           APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ github.run_id }}-headroom-ci
         run: |
+          if [ -z "$APPLE_CERT_BASE64" ] || [ -z "$APPLE_CERT_PASSWORD" ]; then
+            echo "No Apple Developer ID secrets configured; building with ad-hoc signature."
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           CERT_PATH="$RUNNER_TEMP/dev_id.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/headroom-signing.keychain-db"
 
@@ -91,11 +96,15 @@ jobs:
           HEADROOM_BUILD_NUMBER: ${{ github.run_number }}
           HEADROOM_CREATE_ARCHIVES: "1"
           HEADROOM_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
-          HEADROOM_NOTARIZE: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && '1' || '0' }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
+          if [ -n "$HEADROOM_SIGN_IDENTITY" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
+            export HEADROOM_NOTARIZE="1"
+          else
+            export HEADROOM_NOTARIZE="0"
+          fi
           chmod +x scripts/bundle-app.sh
           ./scripts/bundle-app.sh
           ls -lh dist/

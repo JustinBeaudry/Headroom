@@ -51,6 +51,8 @@ private struct AccountsSettingsPane: View {
     @State private var feedbackMessage: String = ""
     @State private var feedbackIsError: Bool = false
     @State private var isTestingConnection: Bool = false
+    @State private var showWebSignInSheet: Bool = false
+    @State private var showManualSection: Bool = false
 
     private var selectedAccount: AccountConfig? {
         viewModel.config.accounts.first {
@@ -141,6 +143,25 @@ private struct AccountsSettingsPane: View {
         .onAppear { syncInputs() }
         .onChange(of: viewModel.selectedSettingsProvider) { syncInputs() }
         .onChange(of: viewModel.selectedSettingsAccountLabel) { syncInputs() }
+        .sheet(isPresented: $showWebSignInSheet) {
+            if let account = selectedAccount {
+                ProviderSignInSheet(provider: account.provider, accountLabel: account.label) { capturedCookie in
+                    isTestingConnection = true
+                    feedbackMessage = ""
+                    Task {
+                        let outcome = await viewModel.saveAndTestCredential(
+                            value: capturedCookie,
+                            provider: account.provider,
+                            accountLabel: account.label,
+                            kind: .sessionCookie
+                        )
+                        feedbackIsError = !outcome.ok
+                        feedbackMessage = outcome.message
+                        isTestingConnection = false
+                    }
+                }
+            }
+        }
     }
 
     private func syncInputs() {
@@ -191,47 +212,45 @@ private struct AccountsSettingsPane: View {
                     }
                 }
 
-                // Primary Method for Claude & Codex: CLI Profile Folder + One-Click Import & Test
-                if account.provider == .claude || account.provider == .codex {
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack {
-                            Text("Recommended: Import from \(account.provider == .claude ? "Claude Code" : "Codex") CLI")
-                                .font(.system(size: 12, weight: .semibold))
-                            Spacer()
+                // Primary One-Click Sign-In & CLI Import Card (zero DevTools required!)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Connect \(account.provider.displayName) (\(account.label.capitalized))")
+                        .font(.system(size: 12.5, weight: .semibold))
+
+                    if account.provider == .grok && viewModel.isCursorOnUnifiedXSubscription {
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(HeadroomTheme.sharedPool)
+                                .font(.system(size: 12))
+                                .padding(.top, 1)
+                            Text("Already tracked via Cursor (Unified X Subscription): your shared X Weekly Grok Pool is already live under Cursor. Sign in below only if you want standalone Grok or xAI API credits.")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(8)
+                        .background(HeadroomTheme.sharedPool.opacity(0.11), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+
+                    Text(quickConnectCaption(for: account.provider))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 8) {
+                        if ProviderSignInSheet.supportsWebSignIn(account.provider) {
                             Button {
-                                viewModel.openReauth(for: account.provider)
+                                showWebSignInSheet = true
                             } label: {
-                                Label("Dashboard", systemImage: "arrow.up.right.square")
-                                    .font(.system(size: 10.5, weight: .medium))
+                                Label("Sign in to \(account.provider.displayName)", systemImage: "globe")
+                                    .font(.system(size: 11.5, weight: .medium))
                             }
-                            .buttonStyle(.link)
-                        }
-
-                        Text(account.provider == .claude
-                            ? "Pick the CLI profile folder for this account (e.g. ~/.claude for Personal, ~/.claude-work for Work), then click Import & Test. Headroom reads that profile's exact Keychain token."
-                            : "Pick the CODEX_HOME folder for this account (e.g. ~/.codex for Personal, ~/.codex-work for Work), then click Import & Test. Supports both auth.json and macOS Keychain keyring.")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 6) {
-                            TextField(account.provider == .claude ? "~/.claude" : "~/.codex", text: $cliDirInput)
-                                .textFieldStyle(.roundedBorder)
-
-                            Button("Browse...") {
-                                if let chosen = pickFolderPanel() {
-                                    cliDirInput = chosen
-                                    viewModel.updateAccountCLIDir(
-                                        provider: account.provider,
-                                        accountLabel: account.label,
-                                        cliConfigDir: chosen
-                                    )
-                                }
-                            }
+                            .buttonStyle(.borderedProminent)
                             .controlSize(.small)
+                            .disabled(isTestingConnection)
                         }
 
-                        HStack(spacing: 8) {
+                        if account.provider == .claude || account.provider == .codex {
                             Button {
                                 isTestingConnection = true
                                 feedbackMessage = ""
@@ -262,76 +281,38 @@ private struct AccountsSettingsPane: View {
                                 if isTestingConnection {
                                     HStack(spacing: 5) {
                                         ProgressView().controlSize(.mini)
-                                        Text("Importing & Testing...")
+                                        Text("Connecting...")
                                     }
                                 } else {
                                     let targetName = cliDirInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                         ? (account.provider == .claude ? "~/.claude" : "~/.codex")
                                         : cliDirInput
-                                    Label("Import & Test from \(targetName)", systemImage: "key.horizontal.fill")
+                                    Label("Import from \(targetName)", systemImage: "terminal")
                                         .font(.system(size: 11.5, weight: .medium))
                                 }
                             }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.bordered)
                             .controlSize(.small)
                             .disabled(isTestingConnection)
+                        }
 
-                            if connected && summary.contains("keychain:") {
-                                Button("Clear", role: .destructive) {
-                                    viewModel.clearCredentials(provider: account.provider, accountLabel: account.label)
-                                    feedbackIsError = false
-                                    feedbackMessage = "Cleared saved Keychain credential."
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                        if connected && summary.contains("keychain:") {
+                            Spacer()
+                            Button("Disconnect", role: .destructive) {
+                                viewModel.clearCredentials(provider: account.provider, accountLabel: account.label)
+                                feedbackIsError = false
+                                feedbackMessage = "Disconnected \(account.provider.displayName) (\(account.label))."
                             }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
                     }
-                    .padding(11)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                } else {
-                    // Guided setup card for Cursor, Grok, Gemini
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("How to connect \(account.provider.displayName)")
-                            .font(.system(size: 11.5, weight: .semibold))
-                        Text(setupInstructions(for: account.provider, isSecondary: !account.resolvedAllowGlobalCLI))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        if account.provider == .grok && viewModel.isCursorOnUnifiedXSubscription {
-                            HStack(alignment: .top, spacing: 7) {
-                                Image(systemName: "checkmark.seal.fill")
-                                    .foregroundStyle(HeadroomTheme.sharedPool)
-                                    .font(.system(size: 12))
-                                    .padding(.top, 1)
-                                Text("Already tracked via Cursor (Unified X Subscription): your shared X Weekly Grok Pool is already live under Cursor. Only add a Grok cookie or xAI API key below if you want standalone xAI API credits or a separate Grok account.")
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(.primary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(8)
-                            .background(HeadroomTheme.sharedPool.opacity(0.11), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        }
-
-                        if account.provider.reauthURL != nil {
-                            Button {
-                                viewModel.openReauth(for: account.provider)
-                            } label: {
-                                Label("Open \(account.provider.displayName) Dashboard", systemImage: "arrow.up.right.square")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .buttonStyle(.link)
-                            .padding(.top, 2)
-                        }
-                    }
-                    .padding(11)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                // Live test feedback banner (always visible right under primary action)
+                // Live test feedback banner
                 if !feedbackMessage.isEmpty {
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: feedbackIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
@@ -351,84 +332,9 @@ private struct AccountsSettingsPane: View {
                     )
                 }
 
-                // Manual Keychain credential input (primary for Grok, alternative for Claude/Codex/Cursor/Gemini)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(account.provider == .claude || account.provider == .codex
-                        ? "Or Paste Browser Cookie / Token Manually"
-                        : "Keychain Credential (Zero Passwords)")
-                        .font(.system(size: 12, weight: .semibold))
-
-                    Picker("Type", selection: $selectedKind) {
-                        Text("Session Cookie").tag(CredentialKind.sessionCookie)
-                        Text("OAuth Token").tag(CredentialKind.oauthToken)
-                        Text("API Key").tag(CredentialKind.apiKey)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-
-                    HStack(spacing: 6) {
-                        SecureField(placeholderFor(provider: account.provider, kind: selectedKind), text: $secretInput)
-                            .textFieldStyle(.roundedBorder)
-
-                        Button("Paste") {
-                            if let clip = NSPasteboard.general.string(forType: .string) {
-                                secretInput = clip.trimmingCharacters(in: .whitespacesAndNewlines)
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-
-                    HStack(spacing: 8) {
-                        Button {
-                            isTestingConnection = true
-                            feedbackMessage = ""
-                            let toSave = secretInput
-                            Task {
-                                let outcome = await viewModel.saveAndTestCredential(
-                                    value: toSave,
-                                    provider: account.provider,
-                                    accountLabel: account.label,
-                                    kind: selectedKind
-                                )
-                                feedbackIsError = !outcome.ok
-                                feedbackMessage = outcome.message
-                                if outcome.ok {
-                                    secretInput = ""
-                                }
-                                isTestingConnection = false
-                            }
-                        } label: {
-                            if isTestingConnection {
-                                HStack(spacing: 5) {
-                                    ProgressView().controlSize(.mini)
-                                    Text("Testing...")
-                                }
-                            } else {
-                                Text("Save & Test")
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(isTestingConnection || secretInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                        if connected && summary.contains("keychain:") && account.provider != .claude && account.provider != .codex {
-                            Button("Clear Saved Keychain", role: .destructive) {
-                                viewModel.clearCredentials(provider: account.provider, accountLabel: account.label)
-                                feedbackIsError = false
-                                feedbackMessage = "Cleared saved Keychain credential."
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                    }
-                }
-
-                // Gemini lane toggle (look up by stable account ID inside Binding — never capture raw array index)
+                // Gemini lane toggle
                 if account.provider == .gemini {
                     let accountID = account.id
-                    Divider()
-                        .opacity(0.5)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Gemini Quota Lane")
                             .font(.system(size: 12, weight: .semibold))
@@ -449,11 +355,105 @@ private struct AccountsSettingsPane: View {
                         }
                         .labelsHidden()
                     }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
+
+                // Advanced / Manual Cookie, API Key, & CLI Folder (cleanly collapsed by default)
+                DisclosureGroup("Advanced: CLI Folder, Manual Cookie, or API Key", isExpanded: $showManualSection) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if account.provider == .claude || account.provider == .codex || account.provider == .gemini {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("CLI Profile Folder")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                HStack(spacing: 6) {
+                                    TextField(account.provider == .claude ? "~/.claude" : "~/.codex", text: $cliDirInput)
+                                        .textFieldStyle(.roundedBorder)
+                                    Button("Browse...") {
+                                        if let chosen = pickFolderPanel() {
+                                            cliDirInput = chosen
+                                            viewModel.updateAccountCLIDir(
+                                                provider: account.provider,
+                                                accountLabel: account.label,
+                                                cliConfigDir: chosen
+                                            )
+                                        }
+                                    }
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("Paste Credential Manually")
+                                .font(.system(size: 11.5, weight: .semibold))
+
+                            Picker("Type", selection: $selectedKind) {
+                                Text("Session Cookie").tag(CredentialKind.sessionCookie)
+                                Text("OAuth Token").tag(CredentialKind.oauthToken)
+                                Text("API Key").tag(CredentialKind.apiKey)
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+
+                            HStack(spacing: 6) {
+                                SecureField(placeholderFor(provider: account.provider, kind: selectedKind), text: $secretInput)
+                                    .textFieldStyle(.roundedBorder)
+
+                                Button("Paste") {
+                                    if let clip = NSPasteboard.general.string(forType: .string) {
+                                        secretInput = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+
+                            Button(isTestingConnection ? "Testing..." : "Save & Test") {
+                                isTestingConnection = true
+                                feedbackMessage = ""
+                                let toSave = secretInput
+                                Task {
+                                    let outcome = await viewModel.saveAndTestCredential(
+                                        value: toSave,
+                                        provider: account.provider,
+                                        accountLabel: account.label,
+                                        kind: selectedKind
+                                    )
+                                    feedbackIsError = !outcome.ok
+                                    feedbackMessage = outcome.message
+                                    if outcome.ok { secretInput = "" }
+                                    isTestingConnection = false
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(isTestingConnection || secretInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                    .padding(.top, 8)
+                }
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.secondary)
             }
             .padding(18)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func quickConnectCaption(for provider: ProviderID) -> String {
+        switch provider {
+        case .claude:
+            return "Sign in inside a private isolated window (no DevTools or password storage), or import directly from your Claude Code CLI profile."
+        case .codex:
+            return "Sign in to ChatGPT/Codex in an isolated window, or import from your Codex CLI folder (~/.codex or ~/.codex-work)."
+        case .cursor:
+            return "Automatically uses your local Cursor desktop app login. Use Sign in to Cursor only if you want to connect an extra Cursor account."
+        case .grok:
+            return "Sign in to grok.com in an isolated window to capture your session automatically, or add an XAI_API_KEY under Advanced."
+        case .gemini:
+            return "Automatically reads ~/.gemini/oauth_creds.json from Gemini CLI. Switch lanes below or add a GEMINI_API_KEY under Advanced."
+        }
     }
 
     private func setupInstructions(for provider: ProviderID, isSecondary: Bool) -> String {

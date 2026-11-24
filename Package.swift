@@ -44,6 +44,7 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("AppKit"),
+                .linkedFramework("WebKit"),
                 .linkedFramework("UserNotifications")
             ]
         ),

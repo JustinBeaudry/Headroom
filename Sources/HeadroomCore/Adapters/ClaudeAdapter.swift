@@ -33,6 +33,7 @@ public struct ClaudeAdapter: ProviderAdapter {
         }
 
         // 2. Secondary: Claude Code CLI OAuth token -> Anthropic OAuth usage endpoint
+        var lastAuthError: String?
         if let oauthCred = creds.first(where: { $0.kind == .oauthToken }) {
             let result = await fetchViaOAuthUsage(
                 token: oauthCred.value,
@@ -45,6 +46,7 @@ public struct ClaudeAdapter: ProviderAdapter {
             if result.status == .ok {
                 return result
             }
+            lastAuthError = result.message
             if result.status == .authExpired && localSummary.requestCount == 0 {
                 return result
             }
@@ -54,6 +56,7 @@ public struct ClaudeAdapter: ProviderAdapter {
         if localSummary.requestCount > 0 {
             let formattedTok = QuotaWindow.formatCompactNumber(Double(localSummary.inputTokens + localSummary.outputTokens))
             let cacheTok = QuotaWindow.formatCompactNumber(Double(localSummary.cacheReadTokens))
+            let prefix = lastAuthError.map { "\($0) — " } ?? ""
             return ProviderSnapshot(
                 provider: .claude,
                 accountLabel: account.label,
@@ -62,8 +65,21 @@ public struct ClaudeAdapter: ProviderAdapter {
                 fetchedAt: now,
                 source: "local_jsonl_fallback",
                 billingModel: .subscription,
-                message: "Local CLI activity (5h): \(localSummary.requestCount) req, \(formattedTok) tok + \(cacheTok) cached. Add claude.ai cookie for live 5h/weekly quota.",
+                message: "\(prefix)Local CLI activity (5h): \(localSummary.requestCount) req, \(formattedTok) tok + \(cacheTok) cached.",
                 estimatedLocalCostUSD: localCost
+            )
+        }
+
+        if let lastAuthError {
+            return ProviderSnapshot(
+                provider: .claude,
+                accountLabel: account.label,
+                status: .incident,
+                windows: [],
+                fetchedAt: now,
+                source: nil,
+                billingModel: .subscription,
+                message: lastAuthError
             )
         }
 

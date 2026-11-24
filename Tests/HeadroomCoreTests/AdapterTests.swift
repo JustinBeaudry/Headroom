@@ -343,4 +343,83 @@ final class AdapterTests: XCTestCase {
         XCTAssertEqual(gcpSnap.status, .ok)
         XCTAssertEqual(gcpSnap.windows.first?.used ?? 0, 28.0, accuracy: 0.01)
     }
+
+    func testAntigravityStatusLineBridgeParsesOfficialQuotaPayload() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-11-24T19:00:00Z")!
+        let payload: [String: Any] = [
+            "product": "antigravity",
+            "plan_tier": "Pro",
+            "email": "developer@example.com",
+            "quota": [
+                "gemini-weekly": [
+                    "remaining_fraction": 0.9378,
+                    "reset_time": "2026-11-30T07:50:32Z",
+                    "reset_in_seconds": 478232
+                ],
+                "gemini-5h": [
+                    "remaining_fraction": 0.42,
+                    "reset_in_seconds": 10800
+                ]
+            ],
+            "cost": [
+                "total_usd": 0.4213,
+                "subagent_usd": 0.0
+            ]
+        ]
+
+        let snap = try XCTUnwrap(AgyStatusBridge.parseStatusPayload(payload, accountLabel: "personal", now: now))
+        XCTAssertEqual(snap.status, .ok)
+        XCTAssertEqual(snap.source, "agy statusLine (Pro)")
+        XCTAssertEqual(snap.estimatedLocalCostUSD ?? 0, 0.4213, accuracy: 0.0001)
+        XCTAssertEqual(snap.windows.count, 2)
+        let weekly = try XCTUnwrap(snap.windows.first(where: { $0.id == "agy_gemini-weekly" }))
+        XCTAssertEqual(weekly.headroomPercent, 93.78, accuracy: 0.01)
+        XCTAssertEqual(weekly.windowDurationSec, 604800)
+        let fiveHour = try XCTUnwrap(snap.windows.first(where: { $0.id == "agy_gemini-5h" }))
+        XCTAssertEqual(fiveHour.headroomPercent, 42.0, accuracy: 0.01)
+        XCTAssertEqual(fiveHour.windowDurationSec, 18000)
+    }
+
+    func testAntigravityHookInstallAndAdapterIngestRoundTrip() async throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-agy-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempHome) }
+
+        // Seed existing settings.json with unrelated keys to verify preservation
+        let settingsDir = tempHome.appendingPathComponent(".gemini/antigravity-cli", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+        let settingsURL = settingsDir.appendingPathComponent("settings.json")
+        try #"{"theme":"dark","customFlag":true}"#.data(using: .utf8)!.write(to: settingsURL)
+
+        XCTAssertFalse(AgyStatusBridge.isHookInstalled(homeDirectory: tempHome))
+        let installedURL = try AgyStatusBridge.installStatusLineHook(
+            headroomBinaryPath: "/Applications/Headroom.app/Contents/Helpers/headroom",
+            homeDirectory: tempHome
+        )
+        XCTAssertEqual(installedURL.path, settingsURL.path)
+        XCTAssertTrue(AgyStatusBridge.isHookInstalled(homeDirectory: tempHome))
+
+        let savedJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try Data(contentsOf: settingsURL)) as? [String: Any]
+        )
+        XCTAssertEqual(savedJSON["theme"] as? String, "dark")
+        XCTAssertEqual(savedJSON["customFlag"] as? Bool, true)
+        let sl = try XCTUnwrap(savedJSON["statusLine"] as? [String: Any])
+        XCTAssertEqual(sl["stack_with_default"] as? Bool, true)
+        XCTAssertEqual(sl["enabled"] as? Bool, true)
+        XCTAssertEqual(sl["command"] as? String, "\"/Applications/Headroom.app/Contents/Helpers/headroom\" ingest agy")
+
+        // Round-trip ingest -> GeminiAdapter(.antigravity)
+        let statusFile = tempHome.appendingPathComponent("agy-status.json")
+        let rawPayload = #"{"product":"antigravity","plan_tier":"Ultra","quota":{"gemini-weekly":{"remaining_fraction":0.85,"reset_in_seconds":400000}}}"#.data(using: .utf8)!
+        try AgyStatusBridge.ingestStatusLineData(rawPayload, to: statusFile, now: fixedNow)
+
+        let ctx = try makeContext { _ in HTTPResponse(statusCode: 500, body: Data()) }
+        let adapter = GeminiAdapter(agyStatusURL: statusFile)
+        let acct = AccountConfig(provider: .gemini, label: "personal", geminiLane: .antigravity)
+        let snap = await adapter.fetchUsage(account: acct, context: ctx)
+        XCTAssertEqual(snap.status, .ok)
+        XCTAssertEqual(snap.source, "agy statusLine (Ultra)")
+        XCTAssertEqual(snap.windows.first?.headroomPercent ?? 0, 85.0, accuracy: 0.01)
+    }
 }

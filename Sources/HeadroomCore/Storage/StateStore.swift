@@ -21,6 +21,10 @@ public enum HeadroomPaths {
     public static var alertStateFileURL: URL {
         appSupportDirectory.appendingPathComponent("alerts.json", isDirectory: false)
     }
+
+    public static var agyStatusFileURL: URL {
+        appSupportDirectory.appendingPathComponent("agy-status.json", isDirectory: false)
+    }
 }
 
 public actor StateStore {

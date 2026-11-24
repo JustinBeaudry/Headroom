@@ -469,6 +469,36 @@ public final class HeadroomViewModel {
         state.snapshots.contains { $0.provider == .cursor && $0.billingModel == .xSubscriptionUnified }
     }
 
+    public var isAgyHookInstalled: Bool {
+        AgyStatusBridge.isHookInstalled()
+    }
+
+    /// Installs the official Antigravity CLI (`agy`) statusLine hook pointing to this app's embedded CLI helper
+    /// so `agy` streams live quota, reset times, and plan tier directly into Headroom.
+    public func installAntigravityHook() async -> (ok: Bool, message: String) {
+        let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/headroom")
+        let binaryPath: String
+        if FileManager.default.isExecutableFile(atPath: helperURL.path) {
+            binaryPath = helperURL.path
+        } else if FileManager.default.isExecutableFile(atPath: "/Applications/Headroom.app/Contents/Helpers/headroom") {
+            binaryPath = "/Applications/Headroom.app/Contents/Helpers/headroom"
+        } else {
+            binaryPath = "headroom"
+        }
+
+        do {
+            let settingsURL = try AgyStatusBridge.installStatusLineHook(headroomBinaryPath: binaryPath)
+            if let idx = config.accounts.firstIndex(where: { $0.provider == .gemini && $0.label == selectedSettingsAccountLabel }) {
+                config.accounts[idx].geminiLane = .antigravity
+                try? await engine.saveConfig(config)
+            }
+            await refresh(force: true)
+            return (true, "Installed official `agy` statusLine hook in \(settingsURL.path). Your next `agy` turn will stream live Antigravity quota directly into Headroom!")
+        } catch {
+            return (false, "Could not configure ~/.gemini/antigravity-cli/settings.json: \(error.localizedDescription)")
+        }
+    }
+
     public func clearCredentials(provider: ProviderID, accountLabel: String) {
         for kind in CredentialKind.allCases {
             try? keychain.deleteSecret(provider: provider, accountLabel: accountLabel, kind: kind)

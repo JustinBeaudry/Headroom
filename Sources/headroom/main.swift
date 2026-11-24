@@ -28,6 +28,8 @@ struct HeadroomCLI {
             await runDaemon(args: rest)
         case "doctor":
             await runDoctor()
+        case "ingest":
+            runIngest(args: rest)
         case "update":
             await runUpdate()
         case "-h", "--help", "help":
@@ -356,7 +358,7 @@ struct HeadroomCLI {
 
         case "set-gemini-lane":
             guard args.count >= 2, let lane = GeminiLane(rawValue: args[1].lowercased()) else {
-                fputs("Usage: headroom config set-gemini-lane <auto|cli|gcp_quota|api_key> [--account personal]\n", stderr)
+                fputs("Usage: headroom config set-gemini-lane <auto|antigravity|cli|gcp_quota|api_key> [--account personal]\n", stderr)
                 exit(1)
             }
             let label = optionValue(in: args, flag: "--account") ?? "personal"
@@ -367,6 +369,16 @@ struct HeadroomCLI {
                 print("Set Gemini (\(label)) lane to \(lane.displayName).")
             } else {
                 fputs("No Gemini account with label '\(label)' found.\n", stderr)
+                exit(1)
+            }
+
+        case "install-agy-hook":
+            let binaryPath = CommandLine.arguments.first ?? "/Applications/Headroom.app/Contents/Helpers/headroom"
+            do {
+                let settingsURL = try AgyStatusBridge.installStatusLineHook(headroomBinaryPath: binaryPath)
+                print("Installed Antigravity CLI statusLine hook in \(settingsURL.path)")
+            } catch {
+                fputs("Failed to install agy hook: \(error.localizedDescription)\n", stderr)
                 exit(1)
             }
 
@@ -417,6 +429,16 @@ struct HeadroomCLI {
             let exists = fm.fileExists(atPath: home.appendingPathComponent(rel).path)
             print("  \(exists ? "✓" : "·") \(name) (~/\(rel))")
         }
+    }
+
+    static func runIngest(args: [String]) {
+        guard let target = args.first?.lowercased(), target == "agy" else {
+            fputs("Usage: headroom ingest agy < status.json\n", stderr)
+            exit(1)
+        }
+        let data = FileHandle.standardInput.readDataToEndOfFile()
+        guard !data.isEmpty else { return }
+        try? AgyStatusBridge.ingestStatusLineData(data)
     }
 
     static func runUpdate() async {

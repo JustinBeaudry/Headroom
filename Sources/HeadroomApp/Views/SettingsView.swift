@@ -238,6 +238,28 @@ private struct AccountsSettingsPane: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     HStack(spacing: 8) {
+                        if account.provider == .gemini {
+                            Button {
+                                isTestingConnection = true
+                                feedbackMessage = ""
+                                Task {
+                                    let outcome = await viewModel.installAntigravityHook()
+                                    feedbackIsError = !outcome.ok
+                                    feedbackMessage = outcome.message
+                                    isTestingConnection = false
+                                }
+                            } label: {
+                                Label(
+                                    viewModel.isAgyHookInstalled ? "Re-sync Antigravity CLI (agy)" : "Connect Antigravity CLI (agy)",
+                                    systemImage: "sparkles"
+                                )
+                                .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(isTestingConnection)
+                        }
+
                         if ProviderSignInSheet.supportsWebSignIn(account.provider) {
                             Button {
                                 showWebSignInSheet = true
@@ -452,7 +474,7 @@ private struct AccountsSettingsPane: View {
         case .grok:
             return "Sign in to grok.com in an isolated window to capture your session automatically, or add an XAI_API_KEY under Advanced."
         case .gemini:
-            return "Automatically reads ~/.gemini/oauth_creds.json from Gemini CLI. Switch lanes below or add a GEMINI_API_KEY under Advanced."
+            return "Click 'Connect Antigravity CLI (agy)' to wire Headroom into Antigravity's official statusLine hook (keeps your default status line intact and streams live 5h/weekly quotas), or choose another lane below."
         }
     }
 

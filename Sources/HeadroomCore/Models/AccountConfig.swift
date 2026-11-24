@@ -2,6 +2,7 @@ import Foundation
 
 public enum GeminiLane: String, Codable, CaseIterable, Sendable, Hashable {
     case auto
+    case antigravity
     case cli
     case gcpQuota = "gcp_quota"
     case apiKey = "api_key"
@@ -9,7 +10,8 @@ public enum GeminiLane: String, Codable, CaseIterable, Sendable, Hashable {
     public var displayName: String {
         switch self {
         case .auto: return "Auto-Detect"
-        case .cli: return "Gemini CLI / Local Logs"
+        case .antigravity: return "Antigravity CLI (agy)"
+        case .cli: return "Legacy Gemini CLI Logs"
         case .gcpQuota: return "GCP Code Assist Quota"
         case .apiKey: return "Gemini API Key Budget"
         }

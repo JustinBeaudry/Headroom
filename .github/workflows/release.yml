@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build-and-release:
-    name: Test, Bundle & Publish macOS Release
+    name: Test, Sign, Notarize & Publish macOS Release
     runs-on: macos-15
 
     steps:
@@ -30,6 +30,34 @@ jobs:
 
       - name: Run unit tests
         run: swift test
+
+      - name: Import Apple Developer ID certificate (if configured)
+        id: signing
+        if: ${{ secrets.APPLE_CERT_BASE64 != '' && secrets.APPLE_CERT_PASSWORD != '' }}
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-headroom-ci
+        run: |
+          CERT_PATH="$RUNNER_TEMP/dev_id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/headroom-signing.keychain-db"
+
+          echo -n "$APPLE_CERT_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity found in APPLE_CERT_BASE64."
+            exit 1
+          fi
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          echo "Imported signing identity: $IDENTITY"
+          rm -f "$CERT_PATH"
 
       - name: Compute next release version
         id: version
@@ -57,11 +85,16 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Computed release version: ${TAG}"
 
-      - name: Build & package Headroom.app, DMG, and CLI
+      - name: Build, sign, notarize & package Headroom.app, DMG, and CLI
         env:
           HEADROOM_VERSION: ${{ steps.version.outputs.version }}
           HEADROOM_BUILD_NUMBER: ${{ github.run_number }}
           HEADROOM_CREATE_ARCHIVES: "1"
+          HEADROOM_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          HEADROOM_NOTARIZE: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && '1' || '0' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           chmod +x scripts/bundle-app.sh
           ./scripts/bundle-app.sh
@@ -72,6 +105,11 @@ jobs:
           .build/release/headroom --version
           .build/release/headroom status --demo
           .build/release/headroom pools --demo --json > /dev/null
+
+      - name: Clean up temporary CI keychain
+        if: always() && steps.signing.outputs.identity != ''
+        run: |
+          security delete-keychain "$RUNNER_TEMP/headroom-signing.keychain-db" || true
 
       - name: Publish GitHub Release
         env:

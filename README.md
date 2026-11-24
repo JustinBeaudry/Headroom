@@ -193,4 +193,17 @@ Every push to `main` triggers [`.github/workflows/release.yml`](.github/workflow
 1. Runs `swift test` — releases are only cut when all tests pass.
 2. Reads [`VERSION`](VERSION) (`MAJOR.MINOR.PATCH`) and automatically increments the patch number above the latest matching `vMAJOR.MINOR.*` Git tag (to cut a new minor/major version, bump `VERSION` and push).
 3. Builds release binaries, generates `AppIcon.icns`, packages `Headroom-vX.Y.Z-macos-arm64.dmg`, `Headroom-vX.Y.Z-macos-arm64.zip`, `headroom-cli-vX.Y.Z-macos-arm64.tar.gz`, and `SHA256SUMS.txt`.
-4. Tags `vX.Y.Z` and publishes a new **GitHub Release** with auto-generated release notes.
+4. If Apple signing secrets are configured, signs both binaries and the DMG with **Developer ID Application** (Hardened Runtime + timestamp), submits to Apple `notarytool`, and staples the notarization ticket.
+5. Tags `vX.Y.Z` and publishes a new **GitHub Release** with auto-generated release notes.
+
+### Code Signing & Apple Notarization Secrets
+
+To mint signed, notarized releases automatically in GitHub Actions, set these 5 repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERT_BASE64` | Base64-encoded `.p12` export of your **Developer ID Application** certificate (`base64 -i DevID.p12 \| pbcopy`) |
+| `APPLE_CERT_PASSWORD` | Password used when exporting the `.p12` |
+| `APPLE_ID` | Your Apple Developer account email |
+| `APPLE_TEAM_ID` | Your 10-character Apple Developer Team ID |
+| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password generated at `account.apple.com` |

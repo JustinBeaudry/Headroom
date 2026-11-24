@@ -11,6 +11,8 @@ CONTENTS_DIR="$BUNDLE_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ICON_SRC="$ROOT_DIR/Assets/AppIcon.png"
+ENTITLEMENTS_PATH="$ROOT_DIR/Config/Headroom.entitlements"
+SIGN_IDENTITY="${HEADROOM_SIGN_IDENTITY:-}"
 
 echo "Building ${APP_NAME} v${VERSION} (build ${BUILD_NUMBER})..."
 cd "$ROOT_DIR"
@@ -33,7 +35,6 @@ if [ -f "$ICON_SRC" ] && command -v sips >/dev/null 2>&1 && command -v python3 >
 import os, struct, sys
 
 src_dir, out_path = sys.argv[1], sys.argv[2]
-# Standard Apple ICNS PNG OSType table (works across macOS 11-26)
 chunks = [
     (b"icp4", "16.png"),
     (b"icp5", "32.png"),
@@ -92,11 +93,48 @@ ${ICON_PLIST_ENTRY}
 </plist>
 PLIST
 
+# Sign binaries: Developer ID Application (Hardened Runtime + timestamp) if configured, else ad-hoc.
 if command -v codesign >/dev/null 2>&1; then
-    codesign --force --deep --sign - "$BUNDLE_DIR" >/dev/null 2>&1 || true
+    if [ -n "$SIGN_IDENTITY" ]; then
+        echo "Signing with Developer ID: $SIGN_IDENTITY"
+        SIGN_FLAGS=(--force --options runtime --timestamp --sign "$SIGN_IDENTITY")
+        if [ -f "$ENTITLEMENTS_PATH" ]; then
+            SIGN_FLAGS+=(--entitlements "$ENTITLEMENTS_PATH")
+        fi
+        # Sign embedded CLI helper first, then the outer app bundle (inside-out)
+        codesign "${SIGN_FLAGS[@]}" "$MACOS_DIR/headroom"
+        codesign "${SIGN_FLAGS[@]}" "$BUNDLE_DIR"
+        codesign --verify --deep --strict --verbose=2 "$BUNDLE_DIR"
+        echo "Verified Developer ID code signature"
+    else
+        codesign --force --deep --sign - "$BUNDLE_DIR" >/dev/null 2>&1 || true
+        echo "Signed ad-hoc (set HEADROOM_SIGN_IDENTITY for Developer ID signing)"
+    fi
 fi
 
 echo "Created native app bundle at: $BUNDLE_DIR"
+
+submit_for_notarization() {
+    local artifact="$1"
+    if [ -n "${HEADROOM_NOTARY_PROFILE:-}" ]; then
+        xcrun notarytool submit "$artifact" --keychain-profile "$HEADROOM_NOTARY_PROFILE" --wait
+    elif [ -n "${APPLE_API_KEY_PATH:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER_ID:-}" ]; then
+        xcrun notarytool submit "$artifact" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+    elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
+        xcrun notarytool submit "$artifact" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+    else
+        echo "Skipping notarization: no notarytool credentials configured"
+        return 1
+    fi
+}
 
 if [ "${HEADROOM_CREATE_ARCHIVES:-0}" = "1" ]; then
     ARCH="$(uname -m)"
@@ -107,13 +145,42 @@ if [ "${HEADROOM_CREATE_ARCHIVES:-0}" = "1" ]; then
     echo "Packaging release archives..."
     rm -f "$ZIP_PATH" "$CLI_TAR_PATH" "$DMG_PATH"
     ditto -c -k --sequesterRsrc --keepParent "$BUNDLE_DIR" "$ZIP_PATH"
-    tar -czf "$CLI_TAR_PATH" -C "$ROOT_DIR/.build/release" headroom
+
+    # Notarize & staple Headroom.app if Developer ID signing + notarization are enabled
+    if [ "${HEADROOM_NOTARIZE:-0}" = "1" ] && [ -n "$SIGN_IDENTITY" ]; then
+        echo "Submitting ${APP_NAME}.app for Apple notarization..."
+        if submit_for_notarization "$ZIP_PATH"; then
+            xcrun stapler staple "$BUNDLE_DIR"
+            xcrun stapler validate "$BUNDLE_DIR"
+            # Re-pack .zip from the stapled .app bundle
+            rm -f "$ZIP_PATH"
+            ditto -c -k --sequesterRsrc --keepParent "$BUNDLE_DIR" "$ZIP_PATH"
+            echo "Stapled notarization ticket to ${APP_NAME}.app"
+        fi
+    fi
+
+    # Package signed CLI binary (use the signed binary inside the app bundle)
+    tar -czf "$CLI_TAR_PATH" -C "$MACOS_DIR" headroom
 
     if command -v hdiutil >/dev/null 2>&1; then
         DMG_STAGING="$(mktemp -d /tmp/headroom-dmg.XXXXXX)"
         cp -R "$BUNDLE_DIR" "$DMG_STAGING/"
         ln -s /Applications "$DMG_STAGING/Applications"
-        hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" >/dev/null || echo "Skipping DMG creation in restricted environment"
+        if hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" >/dev/null; then
+            if [ -n "$SIGN_IDENTITY" ]; then
+                codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+                if [ "${HEADROOM_NOTARIZE:-0}" = "1" ]; then
+                    echo "Submitting DMG for Apple notarization..."
+                    if submit_for_notarization "$DMG_PATH"; then
+                        xcrun stapler staple "$DMG_PATH"
+                        xcrun stapler validate "$DMG_PATH"
+                        echo "Stapled notarization ticket to DMG"
+                    fi
+                fi
+            fi
+        else
+            echo "Skipping DMG creation in restricted environment"
+        fi
         rm -rf "$DMG_STAGING"
     fi
 
